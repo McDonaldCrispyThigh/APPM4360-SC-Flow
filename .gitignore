@@ -1,0 +1,39 @@
+# Virtual environments
+ComplexEnv/
+.venv/
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+dist/
+build/
+*.egg
+
+# Jupyter
+.ipynb_checkpoints/
+
+# IDE
+.vscode/
+.idea/
+
+# OS
+Thumbs.db
+.DS_Store
+
+# Data (shapefiles are large; track only the simplified output)
+data/raw/*.shp
+data/raw/*.shx
+data/raw/*.dbf
+data/raw/*.prj
+data/raw/*.cpg
+data/raw/*.xml
+data/raw/*.zip
+
+# Output figures (regenerable)
+figures/*.png
+figures/*.pdf
+
+# Misc
+*.log
