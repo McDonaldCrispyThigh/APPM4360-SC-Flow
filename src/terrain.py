@@ -32,12 +32,14 @@ from __future__ import annotations
 import json
 import logging
 import urllib.request
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, field
 from typing import List, Optional, Tuple
 
 import numpy as np
 from pyproj import Transformer
-from shapely.geometry import Polygon
+from shapely.geometry import Point, Polygon
+from tqdm import tqdm
 
 from .sc_solver import SCParameters
 
@@ -88,7 +90,83 @@ def _query_epqs(lon: float, lat: float, timeout: float = 12.0) -> Optional[float
         return None
 
 
-# ── Public helpers ────────────────────────────────────────────────────────
+# ── Dense sampling helpers ────────────────────────────────────────────────
+
+
+def _sample_boundary_points(
+    polygon_utm: Polygon,
+    n_per_edge: int = 3,
+) -> np.ndarray:
+    """Generate extra sample points along each polygon edge.
+
+    Returns array of shape (M, 2) in UTM coordinates.
+    Does NOT include the original vertices (those are queried separately).
+    """
+    coords = np.array(polygon_utm.exterior.coords)  # includes closing point
+    pts = []
+    for i in range(len(coords) - 1):
+        for t in np.linspace(0, 1, n_per_edge + 2)[1:-1]:  # exclude endpoints
+            pts.append(coords[i] * (1 - t) + coords[i + 1] * t)
+    return np.array(pts) if pts else np.empty((0, 2))
+
+
+def _sample_interior_points(
+    polygon_utm: Polygon,
+    n_pts: int = 25,
+) -> np.ndarray:
+    """Generate a grid of interior sample points inside the polygon."""
+    minx, miny, maxx, maxy = polygon_utm.bounds
+    side = int(np.ceil(np.sqrt(n_pts * 1.5)))  # oversample to account for exterior
+    xs = np.linspace(minx, maxx, side + 2)[1:-1]
+    ys = np.linspace(miny, maxy, side + 2)[1:-1]
+    pts = []
+    for x in xs:
+        for y in ys:
+            if polygon_utm.contains(Point(x, y)):
+                pts.append([x, y])
+            if len(pts) >= n_pts:
+                break
+        if len(pts) >= n_pts:
+            break
+    return np.array(pts) if pts else np.empty((0, 2))
+
+
+def _batch_query_elevations(
+    coords_utm: np.ndarray,
+    epsg_source: int = 26913,
+    max_workers: int = 6,
+    timeout: float = 15.0,
+) -> np.ndarray:
+    """Query elevations for an array of UTM points using concurrent threads.
+
+    Returns array of elevations; NaN where the API fails.
+    """
+    n = len(coords_utm)
+    elevations = np.full(n, np.nan)
+    if n == 0:
+        return elevations
+
+    transformer = _get_transformer(epsg_source)
+    lonlats = np.array([transformer.transform(x, y) for x, y in coords_utm])
+
+    def _query_one(idx: int) -> Tuple[int, Optional[float]]:
+        lon, lat = lonlats[idx]
+        return idx, _query_epqs(lon, lat, timeout=timeout)
+
+    logger.info("Querying USGS 3DEP for %d points (%d concurrent) …",
+                n, max_workers)
+    n_ok = 0
+    with ThreadPoolExecutor(max_workers=max_workers) as pool:
+        futures = {pool.submit(_query_one, i): i for i in range(n)}
+        for fut in tqdm(as_completed(futures), total=n, desc="USGS 3DEP"):
+            idx, val = fut.result()
+            if val is not None:
+                elevations[idx] = val
+                n_ok += 1
+
+    logger.info("Elevation API: %d / %d points OK (%.0f%%)",
+                n_ok, n, 100 * n_ok / max(n, 1))
+    return elevations
 
 
 def get_vertex_elevations(
@@ -97,31 +175,55 @@ def get_vertex_elevations(
 ) -> np.ndarray:
     """Return elevation (m) at each vertex. NaN where unavailable."""
     coords = np.array(polygon_utm.exterior.coords)[:-1]
-    n = len(coords)
-    elevations = np.full(n, np.nan)
-
-    transformer = _get_transformer(epsg_source)
-
-    logger.info("Querying USGS 3DEP for %d vertex elevations …", n)
-    n_ok = 0
-    for i, (x_utm, y_utm) in enumerate(coords):
-        lon, lat = transformer.transform(x_utm, y_utm)
-        val = _query_epqs(lon, lat)
-        if val is not None:
-            elevations[i] = val
-            n_ok += 1
-            logger.info("  v%d  (%.5f, %.5f) → %.1f m", i, lon, lat, val)
-        else:
-            logger.warning("  v%d  (%.5f, %.5f) → NO DATA", i, lon, lat)
-
-    logger.info("Elevation API: %d / %d vertices OK", n_ok, n)
+    elevations = _batch_query_elevations(coords, epsg_source)
 
     # Fall back to linear model if too few successes
-    if n_ok < 3:
+    if np.sum(np.isfinite(elevations)) < 3:
         logger.warning("Too few API results — using fallback elevation model")
         elevations = _boulder_fallback(coords)
 
     return elevations
+
+
+def get_dense_elevations(
+    polygon_utm: Polygon,
+    n_per_edge: int = 3,
+    n_interior: int = 25,
+    epsg_source: int = 26913,
+    max_workers: int = 6,
+) -> Tuple[np.ndarray, np.ndarray]:
+    """Query elevations at vertices + boundary interpolation + interior grid.
+
+    Returns
+    -------
+    all_coords : (M, 2)  all sample points in UTM
+    all_elevs  : (M,)    elevations in metres (NaN filled with fallback)
+    """
+    vertex_coords = np.array(polygon_utm.exterior.coords)[:-1]
+    boundary_coords = _sample_boundary_points(polygon_utm, n_per_edge)
+    interior_coords = _sample_interior_points(polygon_utm, n_interior)
+
+    all_coords = np.vstack([
+        vertex_coords,
+        boundary_coords,
+        interior_coords,
+    ])
+    n_v = len(vertex_coords)
+    n_b = len(boundary_coords)
+    n_i = len(interior_coords)
+    logger.info("Elevation sample plan: %d vertices + %d boundary + %d interior = %d total",
+                n_v, n_b, n_i, len(all_coords))
+
+    all_elevs = _batch_query_elevations(all_coords, epsg_source, max_workers)
+
+    # Fill NaN with fallback model
+    nan_mask = np.isnan(all_elevs)
+    if nan_mask.any():
+        fb = _boulder_fallback(all_coords[nan_mask])
+        all_elevs[nan_mask] = fb
+        logger.info("Filled %d NaN elevations with fallback model", nan_mask.sum())
+
+    return all_coords, all_elevs
 
 
 def _boulder_fallback(coords_utm: np.ndarray) -> np.ndarray:
@@ -143,9 +245,12 @@ def compute_terrain_info(
     *,
     delta: float = 0.25,
     Q_scale: float = 0.35,
+    n_per_edge: int = 3,
+    n_interior: int = 25,
+    max_workers: int = 6,
     epsg_source: int = 26913,
 ) -> TerrainInfo:
-    """Full pipeline: query elevation → gradient → source/sink parameters.
+    """Full pipeline: dense elevation query → gradient → source/sink.
 
     Parameters
     ----------
@@ -153,24 +258,34 @@ def compute_terrain_info(
     sc_params   : solved SC parameters (for pre-vertex locations).
     delta       : imaginary lift for source / sink above ℝ.
     Q_scale     : source strength as fraction of free-stream.
+    n_per_edge  : extra sample points per polygon edge.
+    n_interior  : interior sample points for the plane fit.
+    max_workers : concurrent API threads.
     epsg_source : CRS of the UTM polygon.
     """
-    # 1. Elevations
-    elevations = get_vertex_elevations(polygon_utm, epsg_source)
+    # 1. Dense elevation sampling
+    all_coords, all_elevs = get_dense_elevations(
+        polygon_utm, n_per_edge=n_per_edge, n_interior=n_interior,
+        epsg_source=epsg_source, max_workers=max_workers,
+    )
 
-    coords = np.array(polygon_utm.exterior.coords)[:-1]
+    # Extract vertex elevations (first n_v entries)
+    vertex_coords = np.array(polygon_utm.exterior.coords)[:-1]
+    n_v = len(vertex_coords)
+    elevations = all_elevs[:n_v]
 
-    # Fill any remaining NaN with fallback
-    if np.any(np.isnan(elevations)):
-        fb = _boulder_fallback(coords)
-        mask = np.isnan(elevations)
-        elevations[mask] = fb[mask]
-
-    # 2. Linear-plane fit → terrain gradient
-    x, y = coords[:, 0], coords[:, 1]
+    # 2. Linear-plane fit using ALL sample points → better gradient
+    x, y = all_coords[:, 0], all_coords[:, 1]
     A = np.column_stack([np.ones_like(x), x, y])
-    coeffs, *_ = np.linalg.lstsq(A, elevations, rcond=None)
+    coeffs, *_ = np.linalg.lstsq(A, all_elevs, rcond=None)
     grad_x, grad_y = coeffs[1], coeffs[2]   # uphill gradient (m / m)
+
+    logger.info("Plane fit using %d sample points (R² quality check):", len(all_elevs))
+    predicted = A @ coeffs
+    ss_res = np.sum((all_elevs - predicted) ** 2)
+    ss_tot = np.sum((all_elevs - all_elevs.mean()) ** 2)
+    r_squared = 1.0 - ss_res / max(ss_tot, 1e-10)
+    logger.info("  R² = %.4f  (1.0 = perfect linear terrain)", r_squared)
 
     slope_mag = np.hypot(grad_x, grad_y)
     theta_down = np.arctan2(-grad_y, -grad_x)     # downhill direction

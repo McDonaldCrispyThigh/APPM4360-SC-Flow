@@ -62,9 +62,12 @@ def run_pipeline(
     demo: bool = False,
     n_grid: int = 80,
     tolerance: float = 150.0,
-    min_vertices: int = 10,
-    max_vertices: int = 20,
+    min_vertices: int = 18,
+    max_vertices: int = 30,
     terrain: bool = False,
+    n_per_edge: int = 3,
+    n_interior: int = 25,
+    max_workers: int = 6,
 ):
     # ══════════════════════════════════════════════════════════════════
     # STEP 1 — Load & simplify polygon
@@ -140,7 +143,12 @@ def run_pipeline(
         from src.terrain import compute_terrain_info, terrain_potential
 
         logger.info("── Terrain mode enabled ──")
-        terrain_info = compute_terrain_info(simplified_utm, params)
+        terrain_info = compute_terrain_info(
+            simplified_utm, params,
+            n_per_edge=n_per_edge,
+            n_interior=n_interior,
+            max_workers=max_workers,
+        )
 
         # Build the terrain potential function
         sources = terrain_info.sources
@@ -190,14 +198,22 @@ def main():
                    help="Enable DEM terrain-informed flow (requires shapefile)")
     p.add_argument("--grid", type=int, default=80)
     p.add_argument("--tolerance", type=float, default=150.0)
-    p.add_argument("--min-vertices", type=int, default=10)
-    p.add_argument("--max-vertices", type=int, default=20)
+    p.add_argument("--min-vertices", type=int, default=18)
+    p.add_argument("--max-vertices", type=int, default=30)
+    p.add_argument("--n-per-edge", type=int, default=3,
+                   help="Extra elevation sample points per polygon edge")
+    p.add_argument("--n-interior", type=int, default=25,
+                   help="Interior elevation sample points")
+    p.add_argument("--max-workers", type=int, default=6,
+                   help="Concurrent API query threads")
     a = p.parse_args()
 
     run_pipeline(
         shapefile=a.shapefile, demo=a.demo, n_grid=a.grid,
         tolerance=a.tolerance, min_vertices=a.min_vertices,
         max_vertices=a.max_vertices, terrain=a.terrain,
+        n_per_edge=a.n_per_edge, n_interior=a.n_interior,
+        max_workers=a.max_workers,
     )
 
 
