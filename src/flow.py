@@ -1,14 +1,14 @@
 """
 flow.py
 =======
-Compute the stream function ψ and velocity potential φ on a grid
-covering the Boulder polygon by numerically inverting the SC map.
+Compute ψ (stream function) and φ (velocity potential) on a grid
+covering the polygon **in normalised coordinates** by numerically
+inverting the SC map.
 
-The complex potential in the upper half-plane is  W(ζ) = U·ζ ,
-so  φ = U·Re(ζ),  ψ = U·Im(ζ).
+Complex potential in ℍ:  W(ζ) = U·ζ
+  →  φ = U·Re(ζ),   ψ = U·Im(ζ)
 
-For each grid point z ∈ Ω we solve  f(ζ) = z  for ζ ∈ ℍ ,
-then read off  ψ = Im(ζ)  (with U = 1).
+For each grid point z ∈ Ω (normalised coords) we solve f(ζ) = z for ζ ∈ ℍ.
 """
 
 from __future__ import annotations
@@ -19,6 +19,7 @@ from typing import Tuple
 import numpy as np
 from scipy import optimize
 from shapely.geometry import Point, Polygon
+from shapely.prepared import prep
 from tqdm import tqdm
 
 from .sc_solver import SCParameters, sc_map_single
@@ -26,102 +27,105 @@ from .sc_solver import SCParameters, sc_map_single
 logger = logging.getLogger(__name__)
 
 
-# ── Inverse SC map (numerical root-finding) ──────────────────────────────
-
 def sc_inverse_single(
     z_target: complex,
     params: SCParameters,
     zeta0: complex = 0.0 + 0.5j,
     *,
-    tol: float = 1e-8,
-    maxiter: int = 60,
+    maxfev: int = 800,
 ) -> complex | None:
     """Find ζ ∈ ℍ such that f(ζ) = z_target.
 
-    Uses ``scipy.optimize.fsolve`` with the residual  f(ζ) − z_target = 0
-    decomposed into real and imaginary parts.
-
-    Returns None if the solver does not converge.
+    Tries the warm-start guess first, then falls back to a grid of
+    initial guesses if needed.  Returns None if all fail.
     """
-
     def residual(xy):
         zeta = xy[0] + 1j * xy[1]
-        fz = sc_map_single(zeta, params, n_pts=200)
+        fz = sc_map_single(zeta, params, n_pts=250)
         return [fz.real - z_target.real, fz.imag - z_target.imag]
 
-    sol, info, ier, msg = optimize.fsolve(
-        residual,
-        [zeta0.real, zeta0.imag],
-        full_output=True,
-        maxfev=maxiter * 10,
-    )
-    if ier == 1:
-        zeta = sol[0] + 1j * sol[1]
-        # Ensure ζ is in the upper half-plane
-        if zeta.imag < -1e-10:
-            return None
-        return zeta
+    # Try the warm-start guess first
+    guesses = [zeta0]
+    # Fallback guesses spread across the upper half-plane
+    for rx in np.linspace(-0.8, 0.8, 5):
+        for iy in [0.2, 0.6, 1.2]:
+            g = rx + 1j * iy
+            if abs(g - zeta0) > 0.1:
+                guesses.append(g)
+
+    for g in guesses:
+        sol, info, ier, msg = optimize.fsolve(
+            residual,
+            [g.real, g.imag],
+            full_output=True,
+            maxfev=maxfev,
+        )
+        if ier == 1:
+            zeta = sol[0] + 1j * sol[1]
+            if zeta.imag > -1e-10:
+                return zeta
     return None
 
 
-# ── Build the stream-function grid ───────────────────────────────────────
-
 def compute_flow_grid(
-    simplified_polygon: Polygon,
+    norm_polygon: Polygon,
     params: SCParameters,
     n_grid: int = 80,
     U: float = 1.0,
 ) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
-    """Compute ψ and φ on a rectangular grid that covers *simplified_polygon*.
+    """Compute ψ and φ on a grid over *norm_polygon* (normalised coords).
 
     Parameters
     ----------
-    simplified_polygon : Shapely polygon (UTM or normalised coords).
+    norm_polygon : Shapely polygon in the **normalised** coordinate system
+        (centred at 0, max vertex modulus ≈ 1).
     params : solved SC parameters.
-    n_grid : number of grid points along each axis.
+    n_grid : grid resolution per axis.
     U : free-stream speed.
 
     Returns
     -------
-    XX, YY : meshgrid arrays, shape ``(n_grid, n_grid)``.
-    Psi : stream function, same shape — NaN outside the polygon.
-    Phi : velocity potential, same shape — NaN outside the polygon.
+    XX, YY, Psi, Phi  — all shape ``(n_grid, n_grid)``.
+    Psi and Phi are NaN outside the polygon.
     """
-    bounds = simplified_polygon.bounds  # (minx, miny, maxx, maxy)
-    pad = 0.02 * max(bounds[2] - bounds[0], bounds[3] - bounds[1])
-    xv = np.linspace(bounds[0] - pad, bounds[2] + pad, n_grid)
-    yv = np.linspace(bounds[1] - pad, bounds[3] + pad, n_grid)
+    bounds = norm_polygon.bounds  # (minx, miny, maxx, maxy)
+    pad = 0.05 * max(bounds[2] - bounds[0], bounds[3] - bounds[1])
+    xv = np.linspace(bounds[0] + pad, bounds[2] - pad, n_grid)
+    yv = np.linspace(bounds[1] + pad, bounds[3] - pad, n_grid)
     XX, YY = np.meshgrid(xv, yv)
 
     Psi = np.full(XX.shape, np.nan)
     Phi = np.full(XX.shape, np.nan)
 
-    # Pre-compute mask (which grid points are inside the polygon)
-    logger.info("Building interior mask (%d × %d grid) …", n_grid, n_grid)
+    # Fast interior mask using prepared geometry
+    logger.info("Building interior mask (%d × %d) …", n_grid, n_grid)
+    prep_poly = prep(norm_polygon)
     mask = np.zeros(XX.shape, dtype=bool)
     for i in range(n_grid):
         for j in range(n_grid):
-            if simplified_polygon.contains(Point(XX[i, j], YY[i, j])):
+            if prep_poly.contains(Point(XX[i, j], YY[i, j])):
                 mask[i, j] = True
     n_inside = mask.sum()
     logger.info("Interior points: %d / %d", n_inside, n_grid * n_grid)
 
-    # ── Solve inverse map for each interior point ──
-    logger.info("Inverting SC map for %d interior points …", n_inside)
+    if n_inside == 0:
+        logger.error("No interior points — check polygon/grid coordinates!")
+        return XX, YY, Psi, Phi
 
-    # Use a running "last good ζ" as the initial guess for nearby points
+    # Solve inverse map, scanning row-by-row for coherent warm-starts
+    logger.info("Inverting SC map for %d interior points …", n_inside)
     zeta_prev = 0.0 + 0.5j
 
     interior_indices = np.argwhere(mask)
-    for count, (i, j) in enumerate(tqdm(interior_indices, desc="Inverse SC map")):
+    for idx in tqdm(interior_indices, desc="Inverse SC map"):
+        i, j = idx
         z_target = XX[i, j] + 1j * YY[i, j]
         zeta = sc_inverse_single(z_target, params, zeta0=zeta_prev)
         if zeta is not None:
             Psi[i, j] = U * zeta.imag
             Phi[i, j] = U * zeta.real
-            zeta_prev = zeta  # warm-start next solve
+            zeta_prev = zeta
 
     n_solved = np.isfinite(Psi).sum()
-    logger.info("Successfully inverted %d / %d interior points", n_solved, n_inside)
-
+    logger.info("Inverted %d / %d interior points", n_solved, n_inside)
     return XX, YY, Psi, Phi

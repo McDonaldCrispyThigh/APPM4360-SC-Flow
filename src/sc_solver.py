@@ -3,27 +3,20 @@ sc_solver.py
 ============
 Schwarz–Christoffel parameter problem solver and forward-map evaluator.
 
-The SC map  f : ℍ → Ω  is
-
     f(ζ) = A + C ∫₀^ζ  ∏ₖ (t − ζₖ)^(αₖ − 1)  dt
 
-where ζₖ ∈ ℝ are pre-images of the polygon vertices on the real axis,
-αₖ·π are the interior angles, and A, C are complex constants.
-
-The *parameter problem* is to find the ζₖ so that the image polygon has
-the correct side-length ratios.  Three pre-vertices are fixed by the
-Möbius normalisation of ℍ; the remaining n − 3 are solved for.
+Vectorised with NumPy for performance.  The Möbius normalisation fixes
+three pre-vertices; the remaining n − 3 are found by nonlinear least
+squares on the side-length ratios.
 """
 
 from __future__ import annotations
 
 import logging
 from dataclasses import dataclass
-from typing import Optional
 
 import numpy as np
 from scipy import optimize
-from scipy.integrate import quad
 
 logger = logging.getLogger(__name__)
 
@@ -32,88 +25,93 @@ logger = logging.getLogger(__name__)
 
 @dataclass
 class SCParameters:
-    """All solved SC mapping parameters."""
-    zk: np.ndarray        # pre-vertices on ℝ, shape (n,) – the last is +∞ (omitted from integrand)
-    alphas: np.ndarray    # interior angles / π, shape (n,)
-    betas: np.ndarray     # exponents αₖ − 1, shape (n,)
-    A: complex            # translation constant
-    C: complex            # scale / rotation constant
-    z_poly: np.ndarray    # target polygon vertices (complex)
+    """Solved SC mapping parameters."""
+    zk: np.ndarray        # pre-vertices on ℝ, shape (n,)
+    alphas: np.ndarray    # interior angles / π
+    betas: np.ndarray     # exponents αₖ − 1
+    A: complex
+    C: complex
+    z_poly: np.ndarray    # target polygon vertices (complex, normalised)
 
 
-# ── SC integrand ──────────────────────────────────────────────────────────
+# ── Vectorised SC integrand ──────────────────────────────────────────────
 
-def _sc_integrand_real(t: float, zk: np.ndarray, betas: np.ndarray) -> complex:
-    """Evaluate ∏ₖ (t − ζₖ)^βₖ  for real t.
+def _sc_prod_real(t: np.ndarray, zk: np.ndarray, betas: np.ndarray) -> np.ndarray:
+    """Evaluate ∏ₖ (t − ζₖ)^βₖ for real t (vectorised over t).
 
-    Uses the principal branch for each factor.  When t < ζₖ , the factor
-    is |t − ζₖ|^βₖ · exp(i·π·βₖ) so that the integral follows the real
-    axis correctly.
+    t : (N,)   zk : (n,)   betas : (n,)   → result : (N,) complex
     """
-    val = 1.0 + 0.0j
-    for z, b in zip(zk, betas):
-        diff = t - z
-        if diff == 0.0:
-            return 0.0 + 0.0j
-        val *= np.abs(diff) ** b * np.exp(1j * b * (np.pi if diff < 0 else 0.0))
-    return val
+    diffs = t[:, None] - zk[None, :]            # (N, n)
+    signs = np.where(diffs < 0, np.pi, 0.0)     # phase correction
+    log_abs = betas[None, :] * np.log(np.abs(diffs) + 1e-300)
+    phases  = 1j * betas[None, :] * signs
+    return np.prod(np.exp(log_abs + phases), axis=1)
 
 
-# ── Integrate along the real axis between two pre-vertices ────────────────
+def _sc_prod_complex(t: np.ndarray, zk: np.ndarray, betas: np.ndarray) -> np.ndarray:
+    """Evaluate ∏ₖ (t − ζₖ)^βₖ for complex t (vectorised over t).
 
-def _integrate_side(zk_a: float, zk_b: float,
-                    zk: np.ndarray, betas: np.ndarray,
-                    n_pts: int = 800) -> complex:
-    """Numerically integrate the SC integrand from *zk_a* to *zk_b*.
-
-    Uses composite Gauss–Legendre quadrature on a real-axis segment,
-    handling the near-singular behaviour at the endpoints via a
-    change of variable  t = zk_a + (zk_b − zk_a) · u  on Gauss nodes.
+    Uses the principal branch of log.
     """
-    nodes, weights = np.polynomial.legendre.leggauss(n_pts)
-    # Map from [-1, 1] to [zk_a, zk_b]
-    mid = 0.5 * (zk_a + zk_b)
-    half = 0.5 * (zk_b - zk_a)
-    result = 0.0 + 0.0j
-    for node, w in zip(nodes, weights):
-        t = mid + half * node
-        result += w * _sc_integrand_real(t, zk, betas)
-    result *= half
-    return result
+    diffs = t[:, None] - zk[None, :]            # (N, n) complex
+    return np.prod(np.exp(betas[None, :] * np.log(diffs)), axis=1)
 
 
-def _side_lengths(zk: np.ndarray, betas: np.ndarray) -> np.ndarray:
-    """Compute |∫ side| for each consecutive pair of pre-vertices."""
+# ── Gauss–Legendre integration (vectorised) ──────────────────────────────
+
+_GL_CACHE: dict[int, tuple] = {}
+
+def _gl_nodes(n_pts: int):
+    """Cached Gauss–Legendre nodes and weights."""
+    if n_pts not in _GL_CACHE:
+        _GL_CACHE[n_pts] = np.polynomial.legendre.leggauss(n_pts)
+    return _GL_CACHE[n_pts]
+
+
+def integrate_real(a: float, b: float,
+                   zk: np.ndarray, betas: np.ndarray,
+                   n_pts: int = 500) -> complex:
+    """∫_a^b ∏ₖ (t−ζₖ)^βₖ dt   along the real axis."""
+    nodes, weights = _gl_nodes(n_pts)
+    mid  = 0.5 * (a + b)
+    half = 0.5 * (b - a)
+    t = mid + half * nodes                       # (n_pts,)
+    vals = _sc_prod_real(t, zk, betas)           # (n_pts,) complex
+    return complex(half * np.dot(weights, vals))
+
+
+def integrate_complex(za: complex, zb: complex,
+                      zk: np.ndarray, betas: np.ndarray,
+                      n_pts: int = 400) -> complex:
+    """∫_{za}^{zb} ∏ₖ (t−ζₖ)^βₖ dt   along a straight line in ℂ."""
+    nodes, weights = _gl_nodes(n_pts)
+    mid  = 0.5 * (za + zb)
+    half = 0.5 * (zb - za)
+    t = mid + half * nodes                       # (n_pts,) complex
+    vals = _sc_prod_complex(t, zk, betas)        # (n_pts,) complex
+    return complex(half * np.dot(weights, vals))
+
+
+# ── Side lengths (for the parameter problem) ─────────────────────────────
+
+def _side_length(zk_a: float, zk_b: float,
+                 zk: np.ndarray, betas: np.ndarray) -> float:
+    """| ∫_{zk_a}^{zk_b} integrand dt |"""
+    return abs(integrate_real(zk_a, zk_b, zk, betas))
+
+
+def _all_side_lengths(zk: np.ndarray, betas: np.ndarray,
+                      R: float = 40.0) -> np.ndarray:
+    """Compute side lengths for all n sides including the infinite one."""
     n = len(zk)
     lengths = np.empty(n)
-    for i in range(n):
-        j = (i + 1) % n
-        # The last side wraps from zk[-1] → +∞ → −∞ → zk[0].
-        # We handle this with a large-radius substitution.
-        if j == 0:
-            lengths[i] = _integrate_infinite_side(zk, betas, i)
-        else:
-            seg = _integrate_side(zk[i], zk[j], zk, betas)
-            lengths[i] = np.abs(seg)
+    for i in range(n - 1):
+        lengths[i] = _side_length(zk[i], zk[i + 1], zk, betas)
+    # Last side: zk[n-1] → +∞ → −∞ → zk[0]
+    seg1 = abs(integrate_real(zk[-1], zk[-1] + R, zk, betas))
+    seg2 = abs(integrate_real(zk[0] - R, zk[0], zk, betas))
+    lengths[n - 1] = seg1 + seg2
     return lengths
-
-
-def _integrate_infinite_side(
-    zk: np.ndarray, betas: np.ndarray, last_idx: int,
-    R: float = 50.0, n_pts: int = 800,
-) -> float:
-    """Integrate the 'infinite' side: zk[last] → +∞ → −∞ → zk[0].
-
-    We split into two half-lines and use the substitution  t = R·tan(θ)
-    to handle the improper integrals, then sum their absolute values.
-    """
-    # Part 1: zk[last] → +R  (finite segment)
-    seg1 = _integrate_side(zk[last_idx], zk[last_idx] + R, zk, betas, n_pts)
-    # Part 2: zk[0] - R → zk[0]  (finite segment)
-    seg2 = _integrate_side(zk[0] - R, zk[0], zk, betas, n_pts)
-    # The tails beyond ±R are approximated; for large R and ∑βₖ = -2
-    # the integrand decays as t^{-2} so the tails are small.
-    return np.abs(seg1) + np.abs(seg2)
 
 
 # ── SC parameter problem ─────────────────────────────────────────────────
@@ -122,184 +120,161 @@ def solve_parameters(
     z_poly: np.ndarray,
     alphas: np.ndarray,
     *,
-    maxiter: int = 400,
+    maxiter: int = 600,
     tol: float = 1e-10,
 ) -> SCParameters:
-    """Solve the Schwarz–Christoffel parameter problem.
+    """Solve the SC parameter problem.
 
-    The Möbius normalisation fixes three pre-vertices:
-        ζ₀ = −1,  ζ₁ = 0,  ζ₂ = 1
-    The remaining n − 3 pre-vertices are found by nonlinear least
-    squares so that the image side-length ratios match the target polygon.
-
-    Parameters
-    ----------
-    z_poly : complex vertices of the target polygon, shape ``(n,)``, CCW.
-    alphas : interior angles / π, shape ``(n,)``.
-
-    Returns
-    -------
-    SCParameters
+    Möbius normalisation: ζ₀ = −1, ζ₁ = 0, ζ_{n−1} = 1.
+    Free parameters: ζ₂, …, ζ_{n−2}  (must satisfy −1 < ζ₀ < ζ₁ < … < ζ_{n−1} = 1).
     """
     n = len(z_poly)
     betas = alphas - 1.0
 
-    # ── Target side-length ratios (normalised by last side) ──
+    # Target side-length ratios
     target_sides = np.abs(np.diff(np.append(z_poly, z_poly[0])))
-    target_ratios = target_sides[:-1] / target_sides[-1]  # length n-1
+    target_ratios = target_sides[:-1] / target_sides[-1]
 
-    # ── Fixed pre-vertices (Möbius normalisation) ──
-    # Fix indices 0, 1, n-1 on the real axis
-    fixed_vals = np.array([-1.0, 0.0, 1.0])
-    fixed_idx = [0, 1, n - 1]
-    free_idx = [i for i in range(n) if i not in fixed_idx]
-
-    # Initial guess: equally spaced in (0, 1) for the free pre-vertices
+    # Fixed pre-vertices
+    fixed_vals = {0: -1.0, 1: 0.0, n - 1: 1.0}
+    free_idx = [i for i in range(n) if i not in fixed_vals]
     n_free = len(free_idx)
+
     if n_free == 0:
-        # Triangle — no free params
-        zk = fixed_vals.copy()
+        zk = np.array([-1.0, 0.0, 1.0])
     else:
-        # Initial: spread between second fixed (0) and last fixed (1)
-        x0 = np.linspace(0.1, 0.9, n_free + 2)[1:-1]
+        # Initial guess: equally spaced in (0, 1)
+        x0 = np.linspace(0.05, 0.95, n_free + 2)[1:-1]
 
         def _residuals(params):
-            # Build full pre-vertex array, sorted
             zk = np.empty(n)
-            zk[fixed_idx[0]] = fixed_vals[0]
-            zk[fixed_idx[1]] = fixed_vals[1]
-            zk[fixed_idx[2]] = fixed_vals[2]
+            for idx, val in fixed_vals.items():
+                zk[idx] = val
             for k, idx in enumerate(free_idx):
                 zk[idx] = params[k]
             zk_sorted = np.sort(zk)
-            sl = _side_lengths(zk_sorted, betas)
+            sl = _all_side_lengths(zk_sorted, betas)
             ratios = sl[:-1] / sl[-1]
             return ratios - target_ratios
 
-        logger.info("Solving SC parameter problem  (n=%d, free=%d) …", n, n_free)
+        logger.info("Solving SC parameters (n=%d, free=%d) …", n, n_free)
         result = optimize.least_squares(
             _residuals, x0,
-            method="lm", max_nfev=maxiter * 20,
+            method="lm",
+            max_nfev=maxiter * 30,
             ftol=tol, xtol=tol, gtol=tol,
         )
-        if not result.success:
-            logger.warning("SC solver did not fully converge: %s", result.message)
-        else:
+        if result.success:
             logger.info("SC solver converged: cost=%.2e", result.cost)
+        else:
+            logger.warning("SC solver: %s  (cost=%.2e)", result.message, result.cost)
 
         zk = np.empty(n)
-        zk[fixed_idx[0]] = fixed_vals[0]
-        zk[fixed_idx[1]] = fixed_vals[1]
-        zk[fixed_idx[2]] = fixed_vals[2]
+        for idx, val in fixed_vals.items():
+            zk[idx] = val
         for k, idx in enumerate(free_idx):
             zk[idx] = result.x[k]
 
     zk = np.sort(zk)
 
-    # ── Determine A and C ──
-    # Map ζ₀ → z_poly[0],  and use the side-vector from ζ₀→ζ₁ to fix C.
+    # Determine A and C
     A, C = _solve_AC(zk, betas, z_poly)
 
-    params = SCParameters(
-        zk=zk, alphas=alphas, betas=betas,
-        A=A, C=C, z_poly=z_poly,
-    )
-    logger.info("SC parameters solved.  A=%.4g%+.4gj   C=%.4g%+.4gj",
-                A.real, A.imag, C.real, C.imag)
+    params = SCParameters(zk=zk, alphas=alphas, betas=betas,
+                          A=A, C=C, z_poly=z_poly)
+    logger.info("A = %.6g%+.6gj   C = %.6g%+.6gj", A.real, A.imag, C.real, C.imag)
     return params
 
 
 def _solve_AC(zk, betas, z_poly):
-    """Determine translation A and scale/rotation C from the solved pre-vertices."""
-    # Integrate ζ₀ → ζ₁
-    I01 = _integrate_side(zk[0], zk[1], zk, betas)
-    # The image side should be  z_poly[1] − z_poly[0]
+    """Determine translation A and scale/rotation C.
+
+    Uses the first two mapped vertices to fix C and A.
+    Integration stays slightly above the real axis to avoid singularities.
+    """
+    delta = 0.01j  # tiny lift into ℍ
+
+    # Integrate along a path slightly above the real axis: zk[0]+δ → zk[1]+δ
+    I01 = integrate_complex(zk[0] + delta, zk[1] + delta, zk, betas)
     delta_z = z_poly[1] - z_poly[0]
     C = delta_z / I01 if abs(I01) > 1e-15 else 1.0 + 0.0j
 
-    # A = z_poly[0] − C · ∫₀^{ζ₀} (but our base-point is 0, and ζ₀ = zk[0])
-    # f(ζ₀) = A + C · ∫₀^{ζ₀} integrand dt = z_poly[0]
-    I_base = _integrate_side(0.0, zk[0], zk, betas)
+    # f(0) = A + C * ∫_0^0 = A, but our base is at ζ=0.
+    # Compute f(zk[0]) and match to z_poly[0] to get A.
+    # ∫_0^{zk[0]}: path 0→0+δ → zk[0]+δ → zk[0]
+    I_base = (integrate_complex(0.0, delta, zk, betas)
+              + integrate_complex(delta, zk[0] + delta, zk, betas)
+              + integrate_complex(zk[0] + delta, zk[0] + 0.0j, zk, betas))
     A = z_poly[0] - C * I_base
     return A, C
 
 
-# ── Forward map evaluation ────────────────────────────────────────────────
+# ── Forward map  f(ζ) ────────────────────────────────────────────────────
 
-def sc_map_single(zeta: complex, params: SCParameters,
-                  n_pts: int = 300) -> complex:
-    """Evaluate f(ζ) for a single point in ℍ (or on ℝ).
+# Reference point in upper half-plane (avoids real-axis singularities)
+_ZETA_REF = 0.0 + 0.5j
+_F_REF_CACHE: dict[int, complex] = {}   # keyed by id(params)
 
-    The integration path goes from 0 to Re(ζ) along the real axis,
-    then vertically to ζ.  This avoids crossing the real-axis
-    singularities.
+
+def _f_at_ref(params: SCParameters, n_pts: int = 500) -> complex:
+    """Evaluate the SC integral at the reference point _ZETA_REF."""
+    key = id(params)
+    if key not in _F_REF_CACHE:
+        zk, betas = params.zk, params.betas
+        # Path: zk[0] → zk[0]+iδ → _ZETA_REF   (stays in ℍ)
+        delta = 0.5
+        p0 = zk[0] + 0.0j
+        p1 = zk[0] + 1j * delta
+        p2 = _ZETA_REF
+        # But we need ∫_0^{_ZETA_REF}, same base as A/C calibration.
+        # Use path: 0→0+iδ → Re(ref)+iδ → ref  (all in ℍ, no singularities)
+        I = 0.0 + 0.0j
+        I += integrate_complex(0.0 + 0.0j, 0.0 + 1j * delta, zk, betas, n_pts)
+        I += integrate_complex(0.0 + 1j * delta, _ZETA_REF.real + 1j * delta,
+                               zk, betas, n_pts)
+        I += integrate_complex(_ZETA_REF.real + 1j * delta, _ZETA_REF,
+                               zk, betas, n_pts)
+        _F_REF_CACHE[key] = I
+    return _F_REF_CACHE[key]
+
+
+def sc_map_single(zeta: complex, params: SCParameters, n_pts: int = 400) -> complex:
+    """Evaluate f(ζ) for a single point in ℍ.
+
+    Integration path stays in the upper half-plane to avoid
+    the real-axis singularities at the pre-vertices.
+    Uses a cached reference evaluation at _ZETA_REF for efficiency.
     """
-    zk = params.zk
-    betas = params.betas
-    A = params.A
-    C = params.C
+    zk, betas, A, C = params.zk, params.betas, params.A, params.C
 
-    # Leg 1: real axis  0 → Re(ζ)
-    if abs(zeta.real) > 1e-14:
-        I_real = _integrate_side_complex(0.0 + 0.0j, zeta.real + 0.0j,
-                                         zk, betas, n_pts)
-    else:
-        I_real = 0.0 + 0.0j
+    # For points on or very near the real axis, lift slightly
+    if abs(zeta.imag) < 1e-12:
+        zeta = zeta.real + 1e-10j
 
-    # Leg 2: vertical  Re(ζ) → ζ
-    if abs(zeta.imag) > 1e-14:
-        I_vert = _integrate_side_complex(zeta.real + 0.0j, zeta,
-                                         zk, betas, n_pts)
-    else:
-        I_vert = 0.0 + 0.0j
+    # Integrate ref → ζ via a path in ℍ
+    I_ref = _f_at_ref(params, n_pts)
 
-    return A + C * (I_real + I_vert)
+    # Path from _ZETA_REF to ζ: go via an intermediate point at
+    # a safe height δ = max(Im(ζ), Im(ref)) / 2 to stay in ℍ
+    delta = max(abs(zeta.imag), 0.3)
+    mid_y = delta
+    p_mid1 = _ZETA_REF.real + 1j * mid_y
+    p_mid2 = zeta.real + 1j * mid_y
 
+    I_path = 0.0 + 0.0j
+    # _ZETA_REF → p_mid1
+    if abs(_ZETA_REF - p_mid1) > 1e-14:
+        I_path += integrate_complex(_ZETA_REF, p_mid1, zk, betas, n_pts)
+    # p_mid1 → p_mid2 (horizontal)
+    if abs(p_mid1 - p_mid2) > 1e-14:
+        I_path += integrate_complex(p_mid1, p_mid2, zk, betas, n_pts)
+    # p_mid2 → ζ
+    if abs(p_mid2 - zeta) > 1e-14:
+        I_path += integrate_complex(p_mid2, zeta, zk, betas, n_pts)
 
-def _sc_integrand_complex(t: complex, zk: np.ndarray, betas: np.ndarray) -> complex:
-    """SC integrand for complex t (off the real axis)."""
-    val = 1.0 + 0.0j
-    for z, b in zip(zk, betas):
-        diff = t - z
-        if abs(diff) < 1e-15:
-            return 0.0 + 0.0j
-        # Principal branch of power
-        val *= np.exp(b * np.log(diff))
-    return val
+    return A + C * (I_ref + I_path)
 
 
-def _integrate_side_complex(
-    za: complex, zb: complex,
-    zk: np.ndarray, betas: np.ndarray,
-    n_pts: int = 300,
-) -> complex:
-    """Integrate along the straight-line segment za → zb in ℂ."""
-    nodes, weights = np.polynomial.legendre.leggauss(n_pts)
-    mid = 0.5 * (za + zb)
-    half = 0.5 * (zb - za)
-    result = 0.0 + 0.0j
-    for node, w in zip(nodes, weights):
-        t = mid + half * node
-        result += w * _sc_integrand_complex(t, zk, betas)
-    result *= half
-    return result
-
-
-def sc_map(
-    zeta_arr: np.ndarray,
-    params: SCParameters,
-    n_pts: int = 300,
-) -> np.ndarray:
-    """Evaluate the SC forward map on an array of complex points.
-
-    Parameters
-    ----------
-    zeta_arr : 1-D array of complex points in ℍ.
-    params : solved SC parameters.
-    n_pts : quadrature order per segment.
-
-    Returns
-    -------
-    np.ndarray of complex — mapped points in the physical domain Ω.
-    """
+def sc_map(zeta_arr: np.ndarray, params: SCParameters, n_pts: int = 400) -> np.ndarray:
+    """Evaluate the SC forward map on an array of complex points."""
     return np.array([sc_map_single(z, params, n_pts) for z in zeta_arr])
