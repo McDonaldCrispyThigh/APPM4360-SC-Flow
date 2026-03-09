@@ -5,16 +5,17 @@ Compute ψ (stream function) and φ (velocity potential) on a grid
 covering the polygon **in normalised coordinates** by numerically
 inverting the SC map.
 
-Complex potential in ℍ:  W(ζ) = U·ζ
-  →  φ = U·Re(ζ),   ψ = U·Im(ζ)
+Default complex potential in ℍ:  W(ζ) = U·ζ
+Terrain-informed potential:      W(ζ) = U·ζ + source/sink terms
 
-For each grid point z ∈ Ω (normalised coords) we solve f(ζ) = z for ζ ∈ ℍ.
+For each grid point z ∈ Ω (normalised coords) we solve f(ζ) = z for ζ ∈ ℍ,
+then evaluate W(ζ) to obtain φ = Re(W) and ψ = Im(W).
 """
 
 from __future__ import annotations
 
 import logging
-from typing import Tuple
+from typing import Callable, Optional, Tuple
 
 import numpy as np
 from scipy import optimize
@@ -25,6 +26,9 @@ from tqdm import tqdm
 from .sc_solver import SCParameters, sc_map_single
 
 logger = logging.getLogger(__name__)
+
+# Type alias for a potential function:  ζ → W(ζ)
+PotentialFn = Callable[[complex], complex]
 
 
 def sc_inverse_single(
@@ -72,7 +76,9 @@ def compute_flow_grid(
     params: SCParameters,
     n_grid: int = 80,
     U: float = 1.0,
-) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+    potential_fn: Optional[PotentialFn] = None,
+    zeta_cache: Optional[np.ndarray] = None,
+) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
     """Compute ψ and φ on a grid over *norm_polygon* (normalised coords).
 
     Parameters
@@ -82,12 +88,20 @@ def compute_flow_grid(
     params : solved SC parameters.
     n_grid : grid resolution per axis.
     U : free-stream speed.
+    potential_fn : callable ``ζ → W(ζ)``.  If None, uses the uniform
+        potential ``W(ζ) = U·ζ``.
+    zeta_cache : optional pre-computed ζ grid (from a previous call).
+        If provided, the expensive inverse-map step is skipped entirely.
 
     Returns
     -------
-    XX, YY, Psi, Phi  — all shape ``(n_grid, n_grid)``.
-    Psi and Phi are NaN outside the polygon.
+    XX, YY, Psi, Phi, Zeta — all shape ``(n_grid, n_grid)``.
+    Psi, Phi, and Zeta are NaN outside the polygon.
     """
+    if potential_fn is None:
+        from .terrain import uniform_potential
+        potential_fn = lambda zeta: uniform_potential(zeta, U)
+
     bounds = norm_polygon.bounds  # (minx, miny, maxx, maxy)
     pad = 0.05 * max(bounds[2] - bounds[0], bounds[3] - bounds[1])
     xv = np.linspace(bounds[0] + pad, bounds[2] - pad, n_grid)
@@ -96,6 +110,23 @@ def compute_flow_grid(
 
     Psi = np.full(XX.shape, np.nan)
     Phi = np.full(XX.shape, np.nan)
+    Zeta = np.full(XX.shape, np.nan, dtype=complex)
+
+    # ── Fast path: re-use a cached ζ grid from a previous run ──
+    if zeta_cache is not None:
+        logger.info("Using cached ζ grid (%d valid points)",
+                     int(np.isfinite(zeta_cache).sum()))
+        Zeta = zeta_cache.copy()
+        valid_mask = np.isfinite(zeta_cache)
+        for i in range(n_grid):
+            for j in range(n_grid):
+                if valid_mask[i, j]:
+                    W = potential_fn(Zeta[i, j])
+                    Psi[i, j] = W.imag
+                    Phi[i, j] = W.real
+        n_solved = np.isfinite(Psi).sum()
+        logger.info("Evaluated potential at %d cached points", n_solved)
+        return XX, YY, Psi, Phi, Zeta
 
     # Fast interior mask using prepared geometry
     logger.info("Building interior mask (%d × %d) …", n_grid, n_grid)
@@ -110,7 +141,7 @@ def compute_flow_grid(
 
     if n_inside == 0:
         logger.error("No interior points — check polygon/grid coordinates!")
-        return XX, YY, Psi, Phi
+        return XX, YY, Psi, Phi, Zeta
 
     # Solve inverse map, scanning row-by-row for coherent warm-starts
     logger.info("Inverting SC map for %d interior points …", n_inside)
@@ -122,10 +153,14 @@ def compute_flow_grid(
         z_target = XX[i, j] + 1j * YY[i, j]
         zeta = sc_inverse_single(z_target, params, zeta0=zeta_prev)
         if zeta is not None:
-            Psi[i, j] = U * zeta.imag
-            Phi[i, j] = U * zeta.real
+            Zeta[i, j] = zeta
+            W = potential_fn(zeta)
+            Psi[i, j] = W.imag
+            Phi[i, j] = W.real
             zeta_prev = zeta
 
     n_solved = np.isfinite(Psi).sum()
     logger.info("Inverted %d / %d interior points", n_solved, n_inside)
+
+    return XX, YY, Psi, Phi, Zeta
     return XX, YY, Psi, Phi

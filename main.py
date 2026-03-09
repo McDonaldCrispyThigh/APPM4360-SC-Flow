@@ -7,6 +7,7 @@ Usage
     python main.py --shapefile data/raw/tl_2025_08_place
     python main.py --demo              # built-in hexagon, no shapefile needed
     python main.py --demo --grid 40    # quick test
+    python main.py --shapefile data/raw/tl_2025_08_place --terrain
 """
 
 from __future__ import annotations
@@ -35,6 +36,8 @@ from src.visualization import (
     plot_streamlines,
     plot_equipotentials,
     plot_combined,
+    plot_terrain_combined,
+    plot_flow_comparison,
 )
 
 logging.basicConfig(
@@ -61,6 +64,7 @@ def run_pipeline(
     tolerance: float = 150.0,
     min_vertices: int = 10,
     max_vertices: int = 20,
+    terrain: bool = False,
 ):
     # ══════════════════════════════════════════════════════════════════
     # STEP 1 — Load & simplify polygon
@@ -120,11 +124,37 @@ def run_pipeline(
     # ══════════════════════════════════════════════════════════════════
     # STEP 4 — Flow grid (in normalised coords)
     # ══════════════════════════════════════════════════════════════════
-    logger.info("Computing flow grid (%d × %d) …", n_grid, n_grid)
-    XX, YY, Psi, Phi = compute_flow_grid(norm_polygon, params, n_grid=n_grid)
+    logger.info("Computing uniform flow grid (%d × %d) …", n_grid, n_grid)
+    XX, YY, Psi, Phi, Zeta = compute_flow_grid(norm_polygon, params, n_grid=n_grid)
 
     n_sol = np.isfinite(Psi).sum()
     logger.info("Flow grid: %d points with valid ψ/φ", n_sol)
+
+    # ══════════════════════════════════════════════════════════════════
+    # STEP 4b — Terrain-informed flow (optional)
+    # ══════════════════════════════════════════════════════════════════
+    terrain_info = None
+    Psi_t = Phi_t = None
+
+    if terrain and not demo:
+        from src.terrain import compute_terrain_info, terrain_potential
+
+        logger.info("── Terrain mode enabled ──")
+        terrain_info = compute_terrain_info(simplified_utm, params)
+
+        # Build the terrain potential function
+        sources = terrain_info.sources
+        pot_fn = lambda zeta: terrain_potential(zeta, U=1.0, sources=sources)
+
+        logger.info("Computing terrain flow grid (using cached ζ) …")
+        _, _, Psi_t, Phi_t, _ = compute_flow_grid(
+            norm_polygon, params, n_grid=n_grid,
+            potential_fn=pot_fn, zeta_cache=Zeta,
+        )
+        n_t = np.isfinite(Psi_t).sum()
+        logger.info("Terrain flow grid: %d points with valid ψ/φ", n_t)
+    elif terrain and demo:
+        logger.warning("--terrain requires a real shapefile; skipped in demo mode")
 
     # ══════════════════════════════════════════════════════════════════
     # STEP 5 — Figures
@@ -134,10 +164,20 @@ def run_pipeline(
     # Fig 1: UTM coords (original vs simplified)
     plot_polygon_comparison(original_utm, simplified_utm)
 
-    # Figs 2-4: normalised coords (flow data)
+    # Figs 2-4: normalised coords (uniform flow)
     plot_streamlines(XX, YY, Psi, norm_polygon)
     plot_equipotentials(XX, YY, Phi, norm_polygon)
     plot_combined(XX, YY, Psi, Phi, norm_polygon)
+
+    # Figs 5-6: terrain (if computed)
+    if Psi_t is not None:
+        plot_terrain_combined(
+            XX, YY, Psi_t, Phi_t, norm_polygon,
+            terrain_info=terrain_info, z_poly=z_poly,
+        )
+        plot_flow_comparison(
+            XX, YY, Psi, Phi, Psi_t, Phi_t, norm_polygon,
+        )
 
     logger.info("Done — figures saved to figures/")
 
@@ -146,6 +186,8 @@ def main():
     p = argparse.ArgumentParser(description="SC conformal mapping – ideal flow")
     p.add_argument("--shapefile", type=str, default=None)
     p.add_argument("--demo", action="store_true")
+    p.add_argument("--terrain", action="store_true",
+                   help="Enable DEM terrain-informed flow (requires shapefile)")
     p.add_argument("--grid", type=int, default=80)
     p.add_argument("--tolerance", type=float, default=150.0)
     p.add_argument("--min-vertices", type=int, default=10)
@@ -155,7 +197,7 @@ def main():
     run_pipeline(
         shapefile=a.shapefile, demo=a.demo, n_grid=a.grid,
         tolerance=a.tolerance, min_vertices=a.min_vertices,
-        max_vertices=a.max_vertices,
+        max_vertices=a.max_vertices, terrain=a.terrain,
     )
 
 
