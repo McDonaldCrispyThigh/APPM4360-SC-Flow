@@ -62,8 +62,8 @@ By the **Milne-Thomson circle theorem**:
 $$W_\text{urban}(\zeta) = U\zeta + \frac{Ua^2}{\zeta - \zeta_0} + \frac{Ua^2}{\bar\zeta - \bar\zeta_0}$$
 
 The image term $Ua^2 / (\bar\zeta - \bar\zeta_0)$ reflects the dipole below $\mathbb{R}$,
-preserving $\psi = 0$ on the real axis. Accuracy is $O\!\left((a/\operatorname{Im}\zeta_0)^2\right)$;
-the run below achieves $\operatorname{Im}(\zeta_0)/a = 5.36$, giving ~3.5 % error.
+preserving $\psi = 0$ on the real axis. Accuracy is $O\!\left((a/\text{Im}\,\zeta_0)^2\right)$;
+the run below achieves $\text{Im}(\zeta_0)/a = 5.36$, giving ~3.5 % error.
 
 ---
 
@@ -84,11 +84,11 @@ python main.py --shapefile data/raw/tl_2025_08_place \
 | Elevation sampling | USGS 3DEP points queried / returned | 81 / 81 (100 %) |
 | RBF terrain fit | Thin-plate-spline R² | 1.0000 |
 | Terrain sources | Vertex source / sink distribution | 4 sources, 10 sinks |
-| | Strength range $|q|$ | 3 × 10⁻⁴ – 0.35 |
+| | Strength range $\lvert q\rvert$ | 3 × 10⁻⁴ – 0.35 |
 | Urban polygon | OSM polygons (commercial/retail) | 73 raw → 6-vertex, 0.13 km² |
 | Urban obstacle | Circle centre $\zeta_0$ (normalised) | $0.765 + 0.302i$ |
 | | Circle radius $a$ | 0.056 |
-| | Separation $\operatorname{Im}(\zeta_0)/a$ | 5.36 |
+| | Separation $\text{Im}(\zeta_0)/a$ | 5.36 |
 | | Circle-theorem error estimate | ~3.5 % |
 | Urban flow grid | Valid points solved | 3631 / 4118 (88 %) |
 
