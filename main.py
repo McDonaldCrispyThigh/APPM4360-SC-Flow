@@ -8,6 +8,8 @@ Usage
     python main.py --demo              # built-in hexagon, no shapefile needed
     python main.py --demo --grid 40    # quick test
     python main.py --shapefile data/raw/tl_2025_08_place --terrain
+    python main.py --shapefile data/raw/tl_2025_08_place --urban
+    python main.py --shapefile data/raw/tl_2025_08_place --terrain --urban
 """
 
 from __future__ import annotations
@@ -30,7 +32,7 @@ from src.polygon import (
 )
 from src.angles import interior_angles_pi, verify_angle_sum, sc_exponents
 from src.sc_solver import solve_parameters, sc_map, SCParameters
-from src.flow import compute_flow_grid
+from src.flow import compute_flow_grid, compute_flow_grid_urban
 from src.visualization import (
     plot_polygon_comparison,
     plot_streamlines,
@@ -38,6 +40,8 @@ from src.visualization import (
     plot_combined,
     plot_terrain_combined,
     plot_flow_comparison,
+    plot_urban_flow,
+    plot_three_way_comparison,
 )
 
 logging.basicConfig(
@@ -65,6 +69,9 @@ def run_pipeline(
     min_vertices: int = 18,
     max_vertices: int = 30,
     terrain: bool = False,
+    urban: bool = False,
+    urban_method: str = "osmnx",
+    urban_vertices: int = 8,
     n_per_edge: int = 3,
     n_interior: int = 25,
     max_workers: int = 6,
@@ -165,6 +172,57 @@ def run_pipeline(
         logger.warning("--terrain requires a real shapefile; skipped in demo mode")
 
     # ══════════════════════════════════════════════════════════════════
+    # STEP 4c — Urban-obstacle doubly-connected flow (optional)
+    # ══════════════════════════════════════════════════════════════════
+    urban_obstacle  = None
+    norm_poly_inner = None
+    Psi_u = Phi_u   = None
+
+    if urban and not demo:
+        from src.urban import get_urban_polygon, polygon_to_complex_inner
+        from src.sc_solver_dc import compute_urban_obstacle
+        from shapely.geometry import Polygon as ShapelyPolygon
+
+        logger.info("── Urban mode enabled ──")
+        urban_poly_utm = get_urban_polygon(
+            simplified_utm,
+            method=urban_method,
+            n_vertices=urban_vertices,
+        )
+
+        if urban_poly_utm is None:
+            logger.error("Could not obtain urban polygon — skipping urban mode")
+        else:
+            # Convert inner polygon to normalised frame
+            z_inner = polygon_to_complex_inner(urban_poly_utm, center, scale)
+            norm_poly_inner = ShapelyPolygon(
+                [(z.real, z.imag) for z in z_inner]
+            )
+
+            # Fit circular obstacle in ℍ
+            urban_obstacle = compute_urban_obstacle(
+                norm_poly_inner, params, n_boundary_pts=24,
+            )
+
+            if urban_obstacle is None:
+                logger.error("Urban obstacle fitting failed — skipping")
+            else:
+                # Build potential (with or without terrain correction)
+                terrain_sources = terrain_info.sources if terrain_info else None
+
+                logger.info("Computing urban doubly-connected flow grid …")
+                XX_u, YY_u, Psi_u, Phi_u, _ = compute_flow_grid_urban(
+                    norm_polygon, norm_poly_inner, params,
+                    urban_obstacle,
+                    n_grid=n_grid,
+                    terrain_sources=terrain_sources,
+                )
+                n_u = int(np.isfinite(Psi_u).sum())
+                logger.info("Urban flow grid: %d points with valid ψ/φ", n_u)
+    elif urban and demo:
+        logger.warning("--urban requires a real shapefile; skipped in demo mode")
+
+    # ══════════════════════════════════════════════════════════════════
     # STEP 5 — Figures
     # ══════════════════════════════════════════════════════════════════
     logger.info("Generating figures …")
@@ -187,6 +245,25 @@ def run_pipeline(
             XX, YY, Psi, Phi, Psi_t, Phi_t, norm_polygon,
         )
 
+    # Figs 7-8: urban obstacle (if computed)
+    if Psi_u is not None:
+        plot_urban_flow(
+            XX_u, YY_u, Psi_u, Phi_u, norm_polygon,
+            norm_polygon_inner=norm_poly_inner,
+            obstacle=urban_obstacle,
+        )
+        # Three-way comparison only when both terrain and urban were run
+        if Psi_t is not None:
+            plot_three_way_comparison(
+                XX, YY, Psi, Psi_t, Psi_u,
+                norm_polygon, norm_poly_inner,
+            )
+        else:
+            # Two-way uniform vs urban
+            from src.visualization import plot_flow_comparison as _pfc
+            _pfc(XX, YY, Psi, Phi, Psi_u, Phi_u, norm_polygon,
+                 filename="fig8_urban_vs_uniform.png")
+
     logger.info("Done — figures saved to figures/")
 
 
@@ -196,6 +273,13 @@ def main():
     p.add_argument("--demo", action="store_true")
     p.add_argument("--terrain", action="store_true",
                    help="Enable DEM terrain-informed flow (requires shapefile)")
+    p.add_argument("--urban", action="store_true",
+                   help="Enable doubly-connected urban-obstacle flow (requires shapefile)")
+    p.add_argument("--urban-method", type=str, default="osmnx",
+                   choices=["osmnx", "fallback"],
+                   help="Data source for urban polygon (default: osmnx)")
+    p.add_argument("--urban-vertices", type=int, default=8,
+                   help="Target vertex count for simplified urban polygon")
     p.add_argument("--grid", type=int, default=80)
     p.add_argument("--tolerance", type=float, default=150.0)
     p.add_argument("--min-vertices", type=int, default=18)
@@ -212,6 +296,8 @@ def main():
         shapefile=a.shapefile, demo=a.demo, n_grid=a.grid,
         tolerance=a.tolerance, min_vertices=a.min_vertices,
         max_vertices=a.max_vertices, terrain=a.terrain,
+        urban=a.urban, urban_method=a.urban_method,
+        urban_vertices=a.urban_vertices,
         n_per_edge=a.n_per_edge, n_interior=a.n_interior,
         max_workers=a.max_workers,
     )

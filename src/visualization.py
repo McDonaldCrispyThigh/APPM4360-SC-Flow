@@ -9,6 +9,8 @@ Figure 3 — Equipotential lines  φ = const  (normalised coords).
 Figure 4 — Combined overlay of streamlines + equipotentials.
 Figure 5 — Terrain-informed streamlines (when --terrain is used).
 Figure 6 — Side-by-side: uniform flow vs. terrain flow.
+Figure 7 — Urban-obstacle doubly-connected flow (when --urban is used).
+Figure 8 — Three-way comparison: uniform / terrain / urban.
 """
 
 from __future__ import annotations
@@ -29,6 +31,10 @@ STREAM_COLOR   = "#2563A8"
 EQUIP_COLOR    = "#B04020"
 TERRAIN_STREAM = "#1B7340"   # green for terrain streamlines
 TERRAIN_EQUIP  = "#9B5B00"   # amber for terrain equipotentials
+URBAN_BOUNDARY = "#5C2D91"   # deep purple for urban core boundary
+URBAN_FILL     = "#EDE7F6"   # lavender for urban core fill
+URBAN_STREAM   = "#1A5276"   # dark blue for urban-obstacle streamlines
+URBAN_EQUIP    = "#7B241C"   # dark red for urban-obstacle equipotentials
 FIG_DIR        = Path("figures")
 
 
@@ -79,6 +85,20 @@ def _draw_boundary(ax, norm_polygon: Polygon):
     x, y = norm_polygon.exterior.xy
     ax.fill(x, y, color=FILL_COLOR, zorder=0)
     ax.plot(x, y, color=BOUNDARY_COLOR, lw=2.0, zorder=5)
+
+
+def _draw_urban(ax, inner_polygon: Optional[Polygon]):
+    """Draw the urban-core obstacle (filled + outlined)."""
+    if inner_polygon is None:
+        return
+    x, y = inner_polygon.exterior.xy
+    ax.fill(x, y, color=URBAN_FILL, zorder=4)
+    ax.plot(x, y, color=URBAN_BOUNDARY, lw=1.8, zorder=6)
+    # Label
+    cx = inner_polygon.centroid.x
+    cy = inner_polygon.centroid.y
+    ax.text(cx, cy, "urban\ncore", ha="center", va="center",
+            fontsize=7, color=URBAN_BOUNDARY, fontweight="bold", zorder=7)
 
 
 # ── Figure 2 ──────────────────────────────────────────────────────────────
@@ -287,6 +307,123 @@ def plot_flow_comparison(
     fig.suptitle("Flow Comparison — Uniform vs. Terrain-Informed",
                  fontsize=15, fontweight="bold", y=0.98)
     plt.tight_layout(rect=[0, 0, 1, 0.94])
+    if save:
+        fig.savefig(FIG_DIR / filename, bbox_inches="tight")
+        logger.info("Saved %s", FIG_DIR / filename)
+    return fig
+
+
+# ══════════════════════════════════════════════════════════════════════════
+# Urban-obstacle figures (Figures 7 & 8)
+# ══════════════════════════════════════════════════════════════════════════
+
+def plot_urban_flow(
+    XX, YY, Psi_u, Phi_u,
+    norm_polygon_outer: Polygon,
+    norm_polygon_inner: Optional[Polygon] = None,
+    obstacle=None,
+    n_levels: int = 28,
+    save: bool = True,
+    filename: str = "fig7_urban_flow.png",
+) -> plt.Figure:
+    """Streamlines + equipotentials for the doubly-connected domain.
+
+    The urban core is drawn as a filled purple obstacle.  Streamlines
+    visibly deflect around it, demonstrating the no-penetration condition.
+    If *obstacle* is provided, the mapped boundary in ℍ is annotated as
+    diagnostic metadata.
+    """
+    _ensure_fig_dir()
+    fig, ax = plt.subplots(figsize=(10, 10), dpi=150)
+
+    _draw_boundary(ax, norm_polygon_outer)
+    _draw_urban(ax, norm_polygon_inner)
+
+    for data, color, lw in [
+        (Psi_u, URBAN_STREAM, 0.9),
+        (Phi_u, URBAN_EQUIP,  0.6),
+    ]:
+        valid = np.isfinite(data)
+        if valid.any():
+            lo, hi = np.nanmin(data), np.nanmax(data)
+            levels = np.linspace(lo, hi, n_levels + 2)[1:-1]
+            ax.contour(XX, YY, data, levels=levels,
+                       colors=color, linewidths=lw, zorder=3)
+
+    # Annotate circle approximation in ℍ → physical coords (informational)
+    if obstacle is not None and norm_polygon_inner is not None:
+        cx = norm_polygon_inner.centroid.x
+        cy = norm_polygon_inner.centroid.y
+        circle = plt.Circle(
+            (cx, cy),
+            radius=0.02,
+            fill=False,
+            linestyle=":",
+            edgecolor=URBAN_BOUNDARY,
+            linewidth=0.8,
+            zorder=8,
+        )
+        ax.add_patch(circle)
+
+    ax.set_aspect("equal"); ax.axis("off")
+    ax.set_title(
+        "Doubly-Connected Flow — Urban Core as Interior Obstacle\n"
+        r"$W(\zeta) = U\zeta + Ua^2/(\zeta-\zeta_0) + Ua^2/(\zeta-\bar\zeta_0)$",
+        fontsize=12, fontweight="bold",
+    )
+    plt.tight_layout()
+    if save:
+        fig.savefig(FIG_DIR / filename, bbox_inches="tight")
+        logger.info("Saved %s", FIG_DIR / filename)
+    return fig
+
+
+def plot_three_way_comparison(
+    XX, YY,
+    Psi_uniform,
+    Psi_terrain,
+    Psi_urban,
+    norm_polygon_outer: Polygon,
+    norm_polygon_inner: Optional[Polygon] = None,
+    n_levels: int = 22,
+    save: bool = True,
+    filename: str = "fig8_three_way_comparison.png",
+) -> plt.Figure:
+    """Three-panel comparison: uniform / terrain-corrected / urban obstacle.
+
+    This is the key summary figure for the project report, showing how
+    each successive modelling enhancement changes the streamline pattern.
+    """
+    _ensure_fig_dir()
+    fig, axes = plt.subplots(1, 3, figsize=(24, 8), dpi=150)
+
+    configs = [
+        (Psi_uniform,  STREAM_COLOR,   r"(a) Uniform  $W=U\zeta$",           None),
+        (Psi_terrain,  TERRAIN_STREAM, r"(b) Terrain-corrected  (+RBF sources)", None),
+        (Psi_urban,    URBAN_STREAM,   r"(c) Urban obstacle  (doubly-connected)", norm_polygon_inner),
+    ]
+
+    for ax, (psi, color, title, inner) in zip(axes, configs):
+        _draw_boundary(ax, norm_polygon_outer)
+        if inner is not None:
+            _draw_urban(ax, inner)
+
+        valid = np.isfinite(psi)
+        if valid.any():
+            lo, hi = np.nanmin(psi), np.nanmax(psi)
+            levels = np.linspace(lo, hi, n_levels + 2)[1:-1]
+            ax.contour(XX, YY, psi, levels=levels,
+                       colors=color, linewidths=0.8, zorder=3)
+
+        ax.set_aspect("equal"); ax.axis("off")
+        ax.set_title(title, fontsize=11, fontweight="bold")
+
+    fig.suptitle(
+        "Streamline Comparison — Boulder City Polygon\n"
+        "Schwarz–Christoffel Conformal Mapping with Progressive Physical Enhancements",
+        fontsize=13, fontweight="bold", y=1.01,
+    )
+    plt.tight_layout()
     if save:
         fig.savefig(FIG_DIR / filename, bbox_inches="tight")
         logger.info("Saved %s", FIG_DIR / filename)

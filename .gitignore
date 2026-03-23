@@ -37,3 +37,12 @@ figures/*.pdf
 
 # Misc
 *.log
+
+# Elevation API cache (regenerable)
+cache/
+
+# Spurious pip artifact
+=1.6
+
+# PDF copies of submitted documents (binary, large)
+*.pdf

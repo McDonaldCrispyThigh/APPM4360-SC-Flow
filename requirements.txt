@@ -11,3 +11,6 @@ pyogrio>=0.7
 
 # Progress bars
 tqdm>=4.65
+
+# Urban / built-up area data (OpenStreetMap)
+osmnx>=1.6

@@ -24,6 +24,9 @@ from shapely.prepared import prep
 from tqdm import tqdm
 
 from .sc_solver import SCParameters, sc_map_single
+from typing import TYPE_CHECKING
+if TYPE_CHECKING:
+    from .sc_solver_dc import UrbanObstacle
 
 logger = logging.getLogger(__name__)
 
@@ -163,4 +166,104 @@ def compute_flow_grid(
     logger.info("Inverted %d / %d interior points", n_solved, n_inside)
 
     return XX, YY, Psi, Phi, Zeta
-    return XX, YY, Psi, Phi
+
+
+def compute_flow_grid_urban(
+    norm_polygon_outer: Polygon,
+    norm_polygon_inner: Polygon,
+    params: SCParameters,
+    obstacle,
+    n_grid: int = 80,
+    U: float = 1.0,
+    terrain_sources=None,
+) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+    """Compute ψ and φ for the doubly-connected domain Ω_outer \\ Ω_inner.
+
+    The urban core (Ω_inner) is treated as a solid obstacle: grid points
+    inside it are masked to NaN.  The complex potential uses the circle-
+    theorem correction from sc_solver_dc.py to enforce approximate
+    no-penetration on the obstacle boundary.
+
+    Parameters
+    ----------
+    norm_polygon_outer : outer (Boulder) boundary in normalised coords.
+    norm_polygon_inner : inner (urban core) boundary in normalised coords.
+    params             : solved outer SC parameters.
+    obstacle           : UrbanObstacle from compute_urban_obstacle().
+    n_grid             : grid resolution per axis.
+    U                  : free-stream speed.
+    terrain_sources    : optional list of (ζ, Q) terrain source/sink pairs.
+
+    Returns
+    -------
+    XX, YY, Psi, Phi, Zeta — all shape (n_grid, n_grid).
+    Points outside outer polygon or inside inner polygon are NaN.
+    """
+    from .sc_solver_dc import urban_potential, urban_terrain_potential
+
+    # Build potential function
+    if terrain_sources:
+        potential_fn = lambda zeta: urban_terrain_potential(
+            zeta, U, obstacle, terrain_sources
+        )
+    else:
+        potential_fn = lambda zeta: urban_potential(zeta, U, obstacle)
+
+    bounds = norm_polygon_outer.bounds
+    pad = 0.05 * max(bounds[2] - bounds[0], bounds[3] - bounds[1])
+    xv = np.linspace(bounds[0] + pad, bounds[2] - pad, n_grid)
+    yv = np.linspace(bounds[1] + pad, bounds[3] - pad, n_grid)
+    XX, YY = np.meshgrid(xv, yv)
+
+    Psi  = np.full(XX.shape, np.nan)
+    Phi  = np.full(XX.shape, np.nan)
+    Zeta = np.full(XX.shape, np.nan, dtype=complex)
+
+    # Build doubly-connected interior mask: inside outer, outside inner
+    logger.info("Building doubly-connected interior mask (%d × %d) …",
+                n_grid, n_grid)
+    from shapely.prepared import prep as shapely_prep
+    prep_outer = shapely_prep(norm_polygon_outer)
+    prep_inner = shapely_prep(norm_polygon_inner)
+
+    mask = np.zeros(XX.shape, dtype=bool)
+    for i in range(n_grid):
+        for j in range(n_grid):
+            pt = Point(XX[i, j], YY[i, j])
+            if prep_outer.contains(pt) and not prep_inner.contains(pt):
+                mask[i, j] = True
+
+    n_inside = mask.sum()
+    logger.info("Doubly-connected interior: %d / %d grid points", n_inside, n_grid * n_grid)
+
+    if n_inside == 0:
+        logger.error("No interior points — check polygon coordinates!")
+        return XX, YY, Psi, Phi, Zeta
+
+    # Invert outer SC map and evaluate potential
+    logger.info("Inverting outer SC map for %d doubly-connected points …", n_inside)
+    zeta_prev = 0.0 + 0.5j
+    interior_indices = np.argwhere(mask)
+
+    for idx in tqdm(interior_indices, desc="Inverse SC (urban)"):
+        i, j = idx
+        z_target = XX[i, j] + 1j * YY[i, j]
+
+        # Skip points very close to the obstacle circle (avoid singularity)
+        zeta = sc_inverse_single(z_target, params, zeta0=zeta_prev, maxfev=800)
+        if zeta is None:
+            continue
+
+        # Skip if the inverse image lands inside the obstacle circle
+        if abs(zeta - obstacle.zeta0) < obstacle.radius * 0.95:
+            continue
+
+        Zeta[i, j] = zeta
+        W = potential_fn(zeta)
+        Psi[i, j] = W.imag
+        Phi[i, j] = W.real
+        zeta_prev = zeta
+
+    n_solved = int(np.isfinite(Psi).sum())
+    logger.info("Urban flow grid: %d / %d points solved", n_solved, n_inside)
+    return XX, YY, Psi, Phi, Zeta
