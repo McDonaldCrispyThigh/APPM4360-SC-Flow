@@ -46,3 +46,7 @@ cache/
 
 # PDF copies of submitted documents (binary, large)
 *.pdf
+
+# Submitted course documents (not for public repo)
+APPM4360_Abstract_Submission.docx
+APPM4360_Team_Guide.pdf
