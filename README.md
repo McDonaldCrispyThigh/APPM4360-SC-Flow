@@ -81,10 +81,9 @@ python main.py --demo
 | Stage | Detail | Value |
 |-------|--------|-------|
 | Raw polygon | TIGER/Line vertices | 1935 |
-| Douglas-Peucker simplification | Tolerance | 862.5 m → 21 vertices |
-| Near-cusp removal | $\alpha < 0.5\pi$ vertices dropped | 21 → 5 vertices |
-| SC parameter solve | LM residual cost | $4.79 \times 10^{-2}$ |
-| Pre-vertex positions | $\zeta_k$ | $[-1,\ 0,\ 0.203,\ 0.601,\ 1]$ |
+| Douglas-Peucker simplification | Tolerance | adaptive → ~20 vertices |
+| Extreme-angle removal | $\alpha \notin [0.15\pi,\, 1.85\pi]$ dropped | ~20 → $\geq 10$ vertices |
+| SC parameter solve | LM residual cost | depends on final $n$ |
 | Terrain elevation | USGS 3DEP sample points | 81 / 81 (100%) |
 | Urban obstacle | OSM commercial polygons | 73 raw → 6-vertex, 0.13 km² |
 | Circle separation | $\text{Im}(\zeta_0)/a$ | 5.36 |
@@ -98,8 +97,8 @@ python main.py --demo
 ![Boulder boundary original vs simplified](figures/fig1_polygon_comparison.png)
 
 1935-vertex TIGER/Line boundary (left) vs. the Douglas-Peucker simplification before
-angle smoothing (right). After removing near-cusp vertices ($\alpha < 0.5\pi$) the
-SC domain $\Omega$ is a 5-vertex polygon.
+angle smoothing (right). Vertices with interior angle outside $[0.15\pi,\, 1.85\pi]$
+are removed to prevent SC crowding, leaving a polygon with $\geq 10$ vertices.
 
 ### Fig 2 - Streamlines ($\psi = \text{const}$)
 

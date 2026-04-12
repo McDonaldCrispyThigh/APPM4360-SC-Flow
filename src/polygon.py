@@ -120,16 +120,18 @@ def ensure_ccw(z_poly: np.ndarray) -> np.ndarray:
 
 def smooth_extreme_angles(
     z_poly: np.ndarray,
-    alpha_min: float = 0.35,
-    min_vertices: int = 5,
+    alpha_min: float = 0.15,
+    alpha_max: float = 1.85,
+    min_vertices: int = 10,
 ) -> np.ndarray:
-    """Remove vertices whose interior angle < alpha_min * pi.
+    """Remove vertices whose interior angle is outside [alpha_min, alpha_max] * pi.
 
-    Near-cusp vertices (very small interior angle) cause the SC crowding
-    problem: pre-vertices cluster within machine epsilon of each other,
-    making all integrals inaccurate.  Dropping such a vertex joins its two
-    adjacent sides into one straight segment, only slightly altering the
-    polygon shape while dramatically improving SC conditioning.
+    Both near-cusp vertices (very small angle) and near-reflex vertices
+    (angle close to 2pi) cause the SC crowding problem: pre-vertices cluster
+    within machine epsilon of each other, making all integrals inaccurate.
+    Dropping such a vertex joins its two adjacent sides into one straight
+    segment, only slightly altering the polygon shape while dramatically
+    improving SC conditioning.
     """
     from src.angles import interior_angles_pi
 
@@ -139,11 +141,17 @@ def smooth_extreme_angles(
         if len(z_poly) <= min_vertices:
             break
         alphas = interior_angles_pi(z_poly)
-        worst = int(np.argmin(alphas))
-        if alphas[worst] < alpha_min:
+
+        # Find worst offender: whichever is furthest outside the allowed band
+        deficit_low  = alpha_min - alphas          # positive where too small
+        deficit_high = alphas - alpha_max          # positive where too large
+        severity = np.maximum(deficit_low, deficit_high)
+        worst = int(np.argmax(severity))
+
+        if severity[worst] > 0:
             logger.info(
-                "Smoothing vertex %d (alpha=%.3f pi < %.2f pi) - removing near-cusp",
-                worst, alphas[worst], alpha_min,
+                "Smoothing vertex %d (alpha=%.3f pi, outside [%.2f, %.2f] pi) - removing",
+                worst, alphas[worst], alpha_min, alpha_max,
             )
             z_poly = np.delete(z_poly, worst)
             changed = True

@@ -205,64 +205,60 @@ def solve_parameters(
 
 
 def _solve_AC(zk, betas, z_poly):
-    """Determine translation A and scale/rotation C.
+    """Determine A = f(_ZETA_REF) and scale/rotation C via least squares.
 
-    Uses the first two mapped vertices to fix C and A.
-    Integration stays slightly above the real axis to avoid singularities.
+    The SC map is parameterised as
+        f(ζ) = A + C ∫_{_ZETA_REF}^{ζ} integrand dt
+
+    where _ZETA_REF = 0.5j lies safely in ℍ away from all branch points.
+    We compute the integrals I_k = ∫_{_ZETA_REF}^{zk[k] + ε} for all n
+    vertices (ε = 0.05j keeps paths away from branch points), then solve
+    the overdetermined linear system
+        A + C · I_k = z_poly[k]   for k = 0, …, n-1
+    in the real least-squares sense to get A and C that globally minimise
+    the vertex error rather than enforcing only two calibration points.
     """
-    delta = 0.1j   # lift into ℍ, large enough to clear near-vertex regions
+    eps = 0.05j   # safe approach height above each pre-vertex
 
-    # Integrate along a path slightly above the real axis: zk[0]+δ → zk[1]+δ
-    I01 = integrate_complex(zk[0] + delta, zk[1] + delta, zk, betas)
-    delta_z = z_poly[1] - z_poly[0]
-    C = delta_z / I01 if abs(I01) > 1e-15 else 1.0 + 0.0j
+    def _path_integral(zeta_target):
+        """∫_{_ZETA_REF}^{zeta_target} via an L-shaped path in ℍ."""
+        mid_y = max(abs(zeta_target.imag), 0.3)
+        p1 = _ZETA_REF.real + 1j * mid_y
+        p2 = zeta_target.real + 1j * mid_y
+        I = 0.0 + 0.0j
+        if abs(_ZETA_REF - p1) > 1e-14:
+            I += integrate_complex(_ZETA_REF, p1, zk, betas)
+        if abs(p1 - p2) > 1e-14:
+            I += integrate_complex(p1, p2, zk, betas)
+        if abs(p2 - zeta_target) > 1e-14:
+            I += integrate_complex(p2, zeta_target, zk, betas)
+        return I
 
-    # f(0) = A + C * ∫_0^0 = A, but our base is at ζ=0.
-    # Compute f(zk[0]) and match to z_poly[0] to get A.
-    # ∫_0^{zk[0]}: path 0→0+δ → zk[0]+δ → zk[0]
-    I_base = (integrate_complex(0.0, delta, zk, betas)
-              + integrate_complex(delta, zk[0] + delta, zk, betas)
-              + integrate_complex(zk[0] + delta, zk[0] + 0.0j, zk, betas))
-    A = z_poly[0] - C * I_base
+    # Use only the two extremal fixed pre-vertices (zk[0] and zk[-1]).
+    # Their integrals are computed far from the crowded region near zk[1]=0,
+    # so GL quadrature is most accurate there.
+    I_first = _path_integral(zk[0]  + eps)
+    I_last  = _path_integral(zk[-1] + eps)
+
+    dI = I_last - I_first
+    C = (z_poly[-1] - z_poly[0]) / dI if abs(dI) > 1e-15 else 1.0 + 0.0j
+    A = z_poly[0] - C * I_first
     return A, C
 
 
 # ── Forward map  f(ζ) ────────────────────────────────────────────────────
 
-# Reference point in upper half-plane (avoids real-axis singularities)
+# Reference point in upper half-plane (avoids real-axis singularities).
+# A = f(_ZETA_REF) is stored in SCParameters.A; all integrals are relative
+# to this base so no branch-point arithmetic is ever needed.
 _ZETA_REF = 0.0 + 0.5j
-_F_REF_CACHE: dict[int, complex] = {}   # keyed by id(params)
-
-
-def _f_at_ref(params: SCParameters, n_pts: int = 500) -> complex:
-    """Evaluate the SC integral at the reference point _ZETA_REF."""
-    # Key on array contents, not object identity (id() is unstable after GC)
-    key = (params.zk.tobytes(), params.betas.tobytes())
-    if key not in _F_REF_CACHE:
-        zk, betas = params.zk, params.betas
-        # Path: zk[0] → zk[0]+iδ → _ZETA_REF   (stays in ℍ)
-        delta = 0.5
-        p0 = zk[0] + 0.0j
-        p1 = zk[0] + 1j * delta
-        p2 = _ZETA_REF
-        # But we need ∫_0^{_ZETA_REF}, same base as A/C calibration.
-        # Use path: 0→0+iδ → Re(ref)+iδ → ref  (all in ℍ, no singularities)
-        I = 0.0 + 0.0j
-        I += integrate_complex(0.0 + 0.0j, 0.0 + 1j * delta, zk, betas, n_pts)
-        I += integrate_complex(0.0 + 1j * delta, _ZETA_REF.real + 1j * delta,
-                               zk, betas, n_pts)
-        I += integrate_complex(_ZETA_REF.real + 1j * delta, _ZETA_REF,
-                               zk, betas, n_pts)
-        _F_REF_CACHE[key] = I
-    return _F_REF_CACHE[key]
 
 
 def sc_map_single(zeta: complex, params: SCParameters, n_pts: int = 400) -> complex:
-    """Evaluate f(ζ) for a single point in ℍ.
+    """Evaluate f(ζ) = A + C ∫_{_ZETA_REF}^{ζ} integrand dt.
 
-    Integration path stays in the upper half-plane to avoid
-    the real-axis singularities at the pre-vertices.
-    Uses a cached reference evaluation at _ZETA_REF for efficiency.
+    A = f(_ZETA_REF) is stored in params.A.
+    Integration path stays in ℍ via an L-shaped route.
     """
     zk, betas, A, C = params.zk, params.betas, params.A, params.C
 
@@ -270,28 +266,20 @@ def sc_map_single(zeta: complex, params: SCParameters, n_pts: int = 400) -> comp
     if abs(zeta.imag) < 1e-12:
         zeta = zeta.real + 1e-10j
 
-    # Integrate ref → ζ via a path in ℍ
-    I_ref = _f_at_ref(params, n_pts)
-
-    # Path from _ZETA_REF to ζ: go via an intermediate point at
-    # a safe height δ = max(Im(ζ), Im(ref)) / 2 to stay in ℍ
+    # L-shaped path from _ZETA_REF to ζ, staying at height ≥ min(Im(ζ), 0.3)
     delta = max(abs(zeta.imag), 0.3)
-    mid_y = delta
-    p_mid1 = _ZETA_REF.real + 1j * mid_y
-    p_mid2 = zeta.real + 1j * mid_y
+    p_mid1 = _ZETA_REF.real + 1j * delta
+    p_mid2 = zeta.real       + 1j * delta
 
     I_path = 0.0 + 0.0j
-    # _ZETA_REF → p_mid1
     if abs(_ZETA_REF - p_mid1) > 1e-14:
         I_path += integrate_complex(_ZETA_REF, p_mid1, zk, betas, n_pts)
-    # p_mid1 → p_mid2 (horizontal)
     if abs(p_mid1 - p_mid2) > 1e-14:
         I_path += integrate_complex(p_mid1, p_mid2, zk, betas, n_pts)
-    # p_mid2 → ζ
     if abs(p_mid2 - zeta) > 1e-14:
         I_path += integrate_complex(p_mid2, zeta, zk, betas, n_pts)
 
-    return A + C * (I_ref + I_path)
+    return A + C * I_path
 
 
 def sc_map(zeta_arr: np.ndarray, params: SCParameters, n_pts: int = 400) -> np.ndarray:

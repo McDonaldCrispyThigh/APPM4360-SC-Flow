@@ -68,9 +68,9 @@ def run_pipeline(
     shapefile=None,
     demo: bool = False,
     n_grid: int = 80,
-    tolerance: float = 150.0,
-    min_vertices: int = 18,
-    max_vertices: int = 30,
+    tolerance: float = 1500.0,
+    min_vertices: int = 12,
+    max_vertices: int = 16,
     terrain: bool = False,
     urban: bool = False,
     urban_method: str = "osmnx",
@@ -100,7 +100,7 @@ def run_pipeline(
     # ── Convert to normalised complex coords ──
     z_poly, center, scale = polygon_to_complex(simplified_utm, normalise=True)
     z_poly = ensure_ccw(z_poly)
-    z_poly = smooth_extreme_angles(z_poly, alpha_min=0.5)  # remove near-cusp vertices
+    z_poly = smooth_extreme_angles(z_poly, alpha_min=0.35, alpha_max=1.75, min_vertices=10)
     n = len(z_poly)
     logger.info("Polygon: %d vertices  (center=%.1f%+.1fj, scale=%.1f)",
                 n, center.real, center.imag, scale)
@@ -123,9 +123,11 @@ def run_pipeline(
     params = solve_parameters(z_poly, alphas)
     logger.info("ζₖ = %s", np.array2string(params.zk, precision=6))
 
-    # ── Sanity check: map pre-vertices back ──
+    # ── Sanity check: map near-pre-vertices (slightly above real axis) ──
+    # Evaluating sc_map exactly on the real axis triggers branch-point
+    # singularities in the integrand; use a small lift to get accurate values.
     logger.info("Forward-map sanity check …")
-    mapped = sc_map(params.zk + 0.0j, params)
+    mapped = sc_map(params.zk + 1e-3j, params)
     max_err = 0.0
     for k in range(n):
         err = abs(mapped[k] - z_poly[k])
@@ -297,9 +299,9 @@ def main():
     p.add_argument("--urban-vertices", type=int, default=8,
                    help="Target vertex count for simplified urban polygon")
     p.add_argument("--grid", type=int, default=80)
-    p.add_argument("--tolerance", type=float, default=150.0)
-    p.add_argument("--min-vertices", type=int, default=18)
-    p.add_argument("--max-vertices", type=int, default=30)
+    p.add_argument("--tolerance", type=float, default=1500.0)
+    p.add_argument("--min-vertices", type=int, default=12)
+    p.add_argument("--max-vertices", type=int, default=16)
     p.add_argument("--n-per-edge", type=int, default=3,
                    help="Extra elevation sample points per polygon edge")
     p.add_argument("--n-interior", type=int, default=25,
