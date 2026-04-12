@@ -1,0 +1,692 @@
+\documentclass[11pt]{article}
+
+% ── Geometry ─────────────────────────────────────────────────────────────────
+\usepackage[margin=1in, top=1.15in, bottom=1.15in]{geometry}
+
+% ── Core math ────────────────────────────────────────────────────────────────
+\usepackage{amsmath, amssymb, amsthm}
+
+% ── Figures ──────────────────────────────────────────────────────────────────
+\usepackage{graphicx}
+\usepackage{subcaption}
+\usepackage{float}
+
+% ── Typography ───────────────────────────────────────────────────────────────
+\usepackage{microtype}
+\usepackage{lmodern}
+
+% ── Hyperlinks ───────────────────────────────────────────────────────────────
+\usepackage[colorlinks=true, linkcolor=blue, citecolor=blue, urlcolor=blue]{hyperref}
+
+% ── Bibliography ─────────────────────────────────────────────────────────────
+\usepackage{natbib}
+\bibliographystyle{plainnat}
+
+% ── Miscellaneous ────────────────────────────────────────────────────────────
+\usepackage{booktabs}
+\usepackage{enumitem}
+\usepackage{xcolor}
+
+% ── Math macros ──────────────────────────────────────────────────────────────
+\newcommand{\HH}{\mathbb{H}}          % upper half-plane
+\newcommand{\CC}{\mathbb{C}}
+\newcommand{\RR}{\mathbb{R}}
+\newcommand{\dif}{\,\mathrm{d}}
+\newcommand{\conj}[1]{\overline{#1}}
+\newcommand{\abs}[1]{\left\lvert #1 \right\rvert}
+\newcommand{\Imag}{\mathrm{Im}}
+\newcommand{\Real}{\mathrm{Re}}
+
+% ── Theorem environments ─────────────────────────────────────────────────────
+\newtheorem{theorem}{Theorem}
+\newtheorem{proposition}[theorem]{Proposition}
+\newtheorem{remark}{Remark}
+
+% ─────────────────────────────────────────────────────────────────────────────
+\begin{document}
+
+% ── Cover page ───────────────────────────────────────────────────────────────
+\begin{titlepage}
+  \centering
+  \vspace*{3.5cm}
+  {\LARGE\bfseries Ideal Fluid Flow in a Polygonal Domain\\[0.6em]
+   via the Schwarz--Christoffel Transformation\par}
+  \vspace{2.5cm}
+  {\large
+    Congyuan Zheng\\
+    \small Dept.\ of Applied Mathematics \& Dept.\ of Geography,
+    University of Colorado Boulder\\[1em]
+    \large Sophia Arany\\
+    \small Dept.\ of Applied Mathematics,
+    University of Colorado Boulder\\[1em]
+    \large Alexander Ingalls\\
+    \small Dept.\ of Aerospace Engineering,
+    University of Colorado Boulder\par}
+  \vspace{2.5cm}
+  {\normalsize APPM 4360 --- Complex Variables and Applications,
+   Spring 2026\\[0.4em]
+   April 27, 2026\par}
+\end{titlepage}
+
+% ── Abstract ─────────────────────────────────────────────────────────────────
+\begin{abstract}
+This paper applies the Schwarz--Christoffel (SC) conformal mapping to simulate
+steady, irrotational, incompressible fluid flow inside the Boulder, Colorado
+city-boundary polygon. The SC transformation maps the upper half-plane $\HH$
+conformally onto the polygonal domain $\Omega$, converting analytically tractable
+complex potentials in $\HH$ into physically meaningful streamline and equipotential
+patterns in the physical domain. Four progressively enriched flow models are
+implemented: (i)~uniform ideal flow, (ii)~terrain-corrected flow using USGS 3DEP
+elevation data fitted by a thin-plate-spline radial basis function, (iii)~doubly-connected
+flow with the downtown urban core modelled as an impenetrable obstacle via the
+Milne-Thomson circle theorem, and (iv)~a road-vortex model placing point vortices
+at major OSM road intersections. The SC parameter problem is solved via softmax
+pre-vertex parameterisation and Levenberg--Marquardt least squares on side-length
+ratios computed by Gauss--Legendre quadrature. All results are produced through
+the forward SC map, yielding artifact-free streamlines and conformal grids that
+satisfy the no-penetration boundary condition exactly by construction.
+\end{abstract}
+
+\newpage
+
+% ═════════════════════════════════════════════════════════════════════════════
+\section{Introduction}
+% ═════════════════════════════════════════════════════════════════════════════
+
+Computing fluid flow in an arbitrary domain is a hard problem: Laplace's equation
+$\nabla^2\phi=0$ possesses no elementary closed-form solution in an irregular
+geometry. The classical remedy, known since the 19th century, is conformal mapping.
+A conformal map $z = f(\zeta)$ from a canonical domain (the unit disk or the upper
+half-plane) to the physical region $\Omega$ transforms the Laplacian from one domain
+to the other while preserving harmonicity. Any analytic function $W(\zeta)$ that
+satisfies the required boundary conditions in the canonical domain automatically
+produces a valid solution in $\Omega$, with no grid-based discretization required.
+
+The Schwarz--Christoffel (SC) transformation, developed independently by
+H.~A.~Schwarz and E.~B.~Christoffel in the 1860s, provides an explicit integral
+formula for the conformal map from the upper half-plane $\HH$ to any polygon.
+For analytic polygons the parameter problem (choosing the pre-images of the
+vertices on the real axis) can sometimes be solved in closed form; for general
+$n$-gons it must be treated numerically. The modern numerical theory was
+systematised by Driscoll and Trefethen~\citep{DT09}, who proved convergence of
+parameter-problem algorithms and provided extensive software.
+
+For polygonal physical domains---which arise naturally from administrative
+boundaries, room layouts, channel cross-sections, and urban footprints---the
+SC map provides exact, analytic access to the interior flow. This stands in
+contrast to finite-element or finite-difference methods, which introduce
+discretization error and require a mesh that conforms to the boundary.
+
+The present project applies the SC transformation to the Boulder, Colorado
+city-boundary polygon (a 1935-vertex TIGER/Line shape~\citep{TIGER25} simplified
+to 11 vertices after Douglas--Peucker reduction and angle smoothing). We implement
+the complete numerical pipeline from scratch in Python: polygon preprocessing,
+the SC parameter problem, the forward map, and four physical potentials of
+increasing complexity. The mathematical framework is drawn from
+\citet{AF03,DT09}; the fluid-dynamics background from \citet{BO99} and
+\citet{MT68}.
+
+The four models are: (i)~\textit{uniform flow} $W=U\zeta$, providing the baseline
+conformal streamline grid; (ii)~\textit{terrain-corrected flow} driven by USGS
+elevation data modelled as distributed source/sink singularities in $\HH$;
+(iii)~\textit{doubly-connected flow} in which the downtown commercial core acts
+as an impenetrable obstacle, modelled via the Milne-Thomson circle theorem; and
+(iv)~\textit{road-vortex flow} placing point vortices at major OSM road intersections
+to capture local circulation. Each correction is additive in the complex potential
+and preserves the no-penetration boundary condition on $\partial\Omega$ via the
+method of images.
+
+\paragraph{Organisation.}
+Section~\ref{sec:theory} develops the SC mapping theory and complex-potential
+framework. Section~\ref{sec:numerical} describes the numerical algorithms.
+Section~\ref{sec:models} derives the four flow models. Section~\ref{sec:results}
+presents the figures and discusses the results. Section~\ref{sec:conclusions}
+summarises conclusions and future directions.
+
+% ═════════════════════════════════════════════════════════════════════════════
+\section{Mathematical Framework}
+\label{sec:theory}
+% ═════════════════════════════════════════════════════════════════════════════
+
+\subsection{Ideal Fluid Flow and the Complex Potential}
+
+A steady two-dimensional flow is \emph{ideal} (or \emph{irrotational and
+incompressible}) if the velocity field $\mathbf{u}=(u,v)$ satisfies
+$\nabla\times\mathbf{u}=0$ (irrotational) and $\nabla\cdot\mathbf{u}=0$
+(incompressible). The first condition implies $\mathbf{u}=\nabla\phi$ for a
+\emph{velocity potential} $\phi$; substituting into the second gives
+$\nabla^2\phi=0$.
+
+The \emph{stream function} $\psi$ is the harmonic conjugate of $\phi$: it
+satisfies $\nabla^2\psi=0$ and is related to $\phi$ by the Cauchy--Riemann
+equations $\partial_x\phi=\partial_y\psi$, $\partial_y\phi=-\partial_x\psi$.
+Together they define the \emph{complex potential}
+\begin{equation}
+  W(z) = \phi(x,y) + i\psi(x,y),
+  \label{eq:W}
+\end{equation}
+which is analytic in the flow domain $\Omega\subset\CC$. The velocity is
+recovered as $\mathbf{u}=(u,v)=\overline{W'(z)}$. Level curves of $\phi$
+are \emph{equipotential lines}; level curves of $\psi$ are
+\emph{streamlines}. The no-penetration condition on a solid boundary
+$\partial\Omega$ is $\psi=\mathrm{const}$ along $\partial\Omega$.
+
+\subsection{The Schwarz--Christoffel Transformation}
+
+The theoretical foundation is the Riemann Mapping Theorem~\citep[Ch.~5]{AF03}.
+
+\begin{theorem}[Riemann, 1851]
+  Let $\Omega\subsetneq\CC$ be a simply connected domain. There exists a
+  bijective conformal map $f:\HH\to\Omega$, unique up to
+  post-composition with a real M\"obius transformation of $\HH$.
+\end{theorem}
+
+The SC formula makes this map explicit for polygonal $\Omega$. Let $\Omega$
+be a polygon with vertices $w_1,\dots,w_n$ listed counter-clockwise and
+interior angles $\alpha_k\pi$ ($\alpha_k\in(0,2)$). The polygon angle-sum
+identity requires $\sum_{k=1}^n \alpha_k = n-2$. The SC map
+$f:\HH\to\Omega$ takes the form
+\begin{equation}
+  f(\zeta) = A + C\int_{\zeta_0}^{\zeta}
+    \prod_{k=1}^{n}(t-\zeta_k)^{\alpha_k-1}\dif t,
+  \label{eq:SC}
+\end{equation}
+where $\zeta_k\in\RR$ are the \emph{pre-vertices} (pre-images of the
+polygon vertices on the real axis), $A\in\CC$ is a translation, and
+$C\in\CC$ encodes the scale and rotation~\citep[Ch.~5]{DT09}. Near $\zeta_k$
+the integrand behaves as $(\zeta-\zeta_k)^{\alpha_k-1}$; integrating once
+produces an argument change of $(\alpha_k-1)\pi$, which---together with the
+turning produced by $C$---yields an interior angle of exactly $\alpha_k\pi$
+at the image vertex $w_k$.
+
+\subsubsection*{Interior angle computation.}
+For a CCW polygon with vertices $z_0,\dots,z_{n-1}$ (complex), the interior
+angle at vertex $k$ in units of $\pi$ is
+\begin{equation}
+  \alpha_k = 1 - \frac{1}{\pi}
+    \arg\!\left(\frac{z_{k+1}-z_k}{z_k-z_{k-1}}\right),
+  \label{eq:alpha}
+\end{equation}
+with all indices taken modulo $n$. One verifies directly that
+$\sum_{k=0}^{n-1}\alpha_k = n-2$, as required.
+
+\subsubsection*{M\"obius normalisation.}
+The conformal map $f$ has three real degrees of freedom (corresponding to the
+group of real M\"obius transformations $\zeta\mapsto(a\zeta+b)/(c\zeta+d)$
+preserving $\HH$). We fix three pre-vertices:
+$\zeta_0=-1$, $\zeta_1=0$, $\zeta_{n-1}=1$,
+leaving $n-3$ free parameters $\zeta_2,\dots,\zeta_{n-2}$.
+
+\subsection{Method of Images and Boundary Conditions}
+\label{sec:images}
+
+A central tool throughout this paper is the \emph{method of images}: any analytic
+function $W(\zeta)$ with $\Imag(W)=0$ on $\RR$ automatically satisfies the
+no-penetration condition $\psi=0$ on $\partial\Omega$ after pulling back via~$f$.
+Therefore, to add a singularity at $s\in\HH$ while preserving $\psi=0$ on $\RR$,
+one adds its mirror image at $\bar s\in\HH^-$. For a source of strength $Q>0$:
+\begin{equation}
+  \frac{Q}{2\pi}\bigl[\log(\zeta-s)+\log(\zeta-\bar{s})\bigr].
+  \label{eq:source}
+\end{equation}
+For $\zeta=x\in\RR$ and $s=a+ib$, $b>0$, the imaginary part of
+\eqref{eq:source} is $\frac{Q}{2\pi}[\arg(x-a-ib)+\arg(x-a+ib)]
+=-\frac{Q}{2\pi}\arctan\!\frac{b}{x-a}+\frac{Q}{2\pi}\arctan\!\frac{b}{x-a}=0$.
+The same pairing is used for point vortices (see Section~\ref{sec:road}).
+
+% ═════════════════════════════════════════════════════════════════════════════
+\section{Numerical Implementation}
+\label{sec:numerical}
+% ═════════════════════════════════════════════════════════════════════════════
+
+\subsection{Polygon Preprocessing}
+
+The raw Boulder TIGER/Line boundary has 1935 vertices. SC solvers become
+numerically unstable for $n\gtrsim 20$ due to \emph{SC crowding}: when a vertex
+has an interior angle close to $0$ or $2\pi$, its pre-vertex $\zeta_k$ is
+forced extremely close to a neighbor, causing catastrophic cancellation in the
+quadrature integrals. Two preprocessing steps address this.
+
+First, Douglas--Peucker simplification with an adaptive binary-search tolerance
+(target: $10$--$16$ vertices) reduces the boundary to $\approx14$ vertices.
+Second, vertices whose interior angle falls outside $[0.35\pi, 1.75\pi]$ are
+removed iteratively (one worst offender per pass), joining adjacent edges into
+a single segment. Boulder converges to $\mathbf{11}$ vertices after this
+angle-smoothing step. The polygon is then normalised to $O(1)$ scale and centred
+at the origin for numerical stability.
+
+\subsection{The SC Parameter Problem}
+
+The $n-3$ free pre-vertices $\zeta_2,\dots,\zeta_{n-2}\in(-1,1)$ must be
+chosen so that the image polygon $f(\RR)$ has the correct side-length ratios.
+Specifically, define the $k$-th side length as
+$L_k = \bigl|\int_{\zeta_k}^{\zeta_{k+1}}\prod_j(t-\zeta_j)^{\alpha_j-1}\dif t\bigr|$
+(with the last side wrapping through $\pm\infty$). The parameter problem is
+\begin{equation}
+  \frac{L_k}{L_{n-1}} = \frac{|w_{k+1}-w_k|}{|w_0-w_{n-1}|},
+  \quad k=0,\dots,n-2.
+  \label{eq:param}
+\end{equation}
+To keep the free parameters strictly ordered without box constraints, we use a
+\emph{softmax reparameterisation}: given $p\in\RR^{n-3}$ (unconstrained), set
+$w_j = e^{p_j}/(\sum_j e^{p_j}+1)$ and $\zeta_{\mathrm{free}}=\mathrm{cumsum}(w)$,
+which maps any $p$ to a strictly increasing sequence in $(0,1)$. System~\eqref{eq:param}
+is then solved by \textbf{Levenberg--Marquardt least squares}
+(\texttt{scipy.optimize.least\_squares}, \texttt{method=`lm'},
+up to $18{,}000$ function evaluations). Each side length is evaluated by
+$500$-node Gauss--Legendre quadrature. Constants $A$ and $C$ are determined
+by an overdetermined linear least-squares fit of $A+C\cdot I_k = w_k$ across
+all $n$ vertices, where $I_k$ is the SC integral from a reference
+point $\zeta_{\mathrm{ref}}=0.5i$ to vertex $k$.
+
+\subsection{Forward Map and Streamline Computation}
+
+All flow results are produced via the \emph{forward-map} approach, avoiding
+Newton-iteration inverse solves. A dense grid of $\zeta$ values on a
+$400\times400$ mesh in $\HH$ is mapped forward to $z=f(\zeta)$ (each SC
+integral evaluated by a 400-node Gauss--Legendre rule along an L-shaped path
+in $\HH$ that clears the real-axis branch cuts). The complex potential $W(\zeta)$
+is evaluated analytically at each $\zeta$ point. The resulting scattered pairs
+$(z_i, W(\zeta_i))$ in the $z$-plane are then interpolated to a regular grid by
+\texttt{scipy.interpolate.griddata} (linear method), and streamlines
+($\Imag(W)=\mathrm{const}$) and equipotentials ($\Real(W)=\mathrm{const}$)
+are extracted as contours. This guarantees that every streamline exactly satisfies
+$\psi=0$ on $\partial\Omega$ by the method-of-images construction, with no
+boundary discretization error.
+
+% ═════════════════════════════════════════════════════════════════════════════
+\section{Physical Flow Models}
+\label{sec:models}
+% ═════════════════════════════════════════════════════════════════════════════
+
+\subsection{Uniform Ideal Flow}
+
+In $\HH$, uniform rightward flow of speed $U$ has the trivial complex potential
+$W(\zeta)=U\zeta$. Streamlines are horizontal lines $\Imag(\zeta)=\eta_0$
+and equipotentials are vertical lines $\Real(\zeta)=\xi_0$. Pulling back
+through $f$ yields a conformal grid in $\Omega$; the Cauchy--Riemann equations
+guarantee that streamlines and equipotentials remain orthogonal wherever
+$f'(\zeta)\neq0$.
+
+\subsection{Terrain-Corrected Flow}
+\label{sec:terrain}
+
+Boulder's terrain drops approximately 200\,m from west ($\sim$1770\,m) to east
+($\sim$1570\,m). Topographic slope drives a wind-speed component that acts as a
+source (uphill face) or sink (downhill face) at each boundary segment. We model
+this by one source/sink singularity per polygon vertex in $\HH$:
+\begin{equation}
+  W_{\mathrm{terrain}}(\zeta) = U\zeta
+  + \sum_{k=1}^{n}\frac{Q_k}{2\pi}
+    \bigl[\log(\zeta-s_k)+\log(\zeta-\bar{s}_k)\bigr],
+  \label{eq:terrain}
+\end{equation}
+where $s_k = \zeta_k + \delta i$ ($\delta=0.25$) lifts the singularity into $\HH$,
+and the image term preserves $\psi=0$ on $\RR$ by the argument of
+Section~\ref{sec:images}. The strength
+$Q_k \propto (\nabla e)_k\cdot\hat{e}_{\mathrm{flow}}$
+is proportional to the local elevation gradient projected onto the east-facing
+flow direction. Elevation is obtained from the USGS 3DEP EPQS API~\citep{USGS3DEP}
+at $\approx69$ sample points (polygon vertices, three interpolation points per
+edge, and 25 interior grid points), fitted by a thin-plate-spline radial basis
+function; 5-fold cross-validation $R^2\approx0.60$ for this run. Per-vertex
+gradients are computed by centred finite differences ($h=100$\,m) on the RBF
+surface.
+
+\subsection{Urban Obstacle: Doubly-Connected Domain}
+\label{sec:urban}
+
+The downtown commercial core introduces an interior obstacle, making $\Omega$
+doubly connected. Applying $f^{-1}$ to the obstacle boundary yields a closed
+curve $C\subset\HH$, bounded by its minimum enclosing circle (computed by
+Welzl's algorithm \citep{DT09}): centre $\zeta_0\in\HH$, radius $a$. The
+\emph{Milne-Thomson circle theorem}~\citep[Ch.~6]{MT68} states that for
+flow $W_0(\zeta)$ with no singularities inside $|\zeta-\zeta_0|\leq a$,
+the potential
+\begin{equation}
+  W(\zeta) = W_0(\zeta)
+    + \frac{a^2}{\conj{\zeta-\zeta_0}}\cdot \conj{W_0'\!\left(\zeta_0
+      + \frac{a^2}{\conj{\zeta-\zeta_0}}\right)}
+  \label{eq:circle-general}
+\end{equation}
+satisfies $\psi=\mathrm{const}$ on $|\zeta-\zeta_0|=a$. For uniform flow
+$W_0=U\zeta$ this simplifies to
+\begin{equation}
+  W_{\mathrm{urban}}(\zeta) = U\zeta
+    + \frac{Ua^2}{\zeta-\zeta_0}
+    + \frac{Ua^2}{\bar{\zeta}-\bar{\zeta}_0}.
+  \label{eq:urban}
+\end{equation}
+The first additional term enforces no-penetration on the circle; the second
+(image term) restores $\psi=0$ on $\RR$. The approximation error in treating
+the actual obstacle boundary as a circle is $O((a/\Imag\,\zeta_0)^2)$.
+
+\subsection{Road-Vortex Flow}
+\label{sec:road}
+
+Major road intersections generate local circulation in urban atmospheric flow
+through traffic-induced turbulence and building channelling. We model each of
+the $M$ highest-degree OSM road intersections inside $\Omega$ as a point vortex
+in $\HH$. The intersection position $z^*_k\in\Omega$ is mapped to $s_k\in\HH$
+via Newton iteration on $f$ (SC inverse map). The complex potential is
+\begin{equation}
+  W_{\mathrm{road}}(\zeta) = U\zeta
+  + \sum_{k=1}^{M}\frac{-i\Gamma_k}{2\pi}
+    \bigl[\log(\zeta-s_k)+\log(\zeta-\bar{s}_k)\bigr],
+  \label{eq:road}
+\end{equation}
+where $\Gamma_k\propto\deg(k)$ (node degree = number of road arms meeting)
+and the sign is positive (CCW) for intersections north of the polygon centroid
+and negative (CW) for those south, producing a vortex-pair shear consistent
+with Boulder's prevailing westerly flow. The image term $\log(\zeta-\bar{s}_k)$
+preserves $\psi=0$ on $\RR$ by the same cancellation shown in Section~\ref{sec:images}.
+
+% ═════════════════════════════════════════════════════════════════════════════
+\section{Results}
+\label{sec:results}
+% ═════════════════════════════════════════════════════════════════════════════
+
+\subsection{Boulder Polygon Simplification}
+
+Figure~\ref{fig:poly} shows the original 1935-vertex TIGER/Line boundary of
+Boulder alongside the 11-vertex polygon used in the SC computation. The
+Douglas--Peucker simplification removes the fine coastal-detail undulations
+while preserving the essential east--west elongation and the northern indentation
+that constitutes the most prominent geometric feature. The simplified polygon
+is the actual domain $\Omega$ for all flow computations that follow.
+
+\begin{figure}[h]
+  \centering
+  \includegraphics[width=0.88\textwidth]{figures/fig1_polygon_comparison.png}
+  \caption{Left: original 1935-vertex TIGER/Line boundary of Boulder, CO
+  (US Census Bureau, 2025). Right: 11-vertex simplified polygon after
+  Douglas--Peucker reduction and angle smoothing, used as the domain $\Omega$
+  for the SC computation. The aspect ratio and dominant geometric features are
+  faithfully preserved.}
+  \label{fig:poly}
+\end{figure}
+
+\subsection{Uniform Flow and the Conformal Grid}
+\label{sec:res-uniform}
+
+Figure~\ref{fig:uniform} presents the results for uniform flow $W=U\zeta$.
+In Figure~\ref{fig:uniform}a, streamlines ($\psi=\mathrm{const}$) enter
+from the left boundary, compress noticeably through the narrow northern
+neck, and exit to the right. No streamline crosses $\partial\Omega$; the
+no-penetration condition holds exactly by the forward-map construction.
+Near the northern indentation, where the polygon boundary is most curved,
+the derivative $|f'(\zeta)|$ is large, reflecting the conformal stretching
+of the metric; streamlines compress accordingly.
+
+Figure~\ref{fig:uniform}b overlays equipotentials
+($\phi=\mathrm{const}$). The two families are visually orthogonal throughout
+the interior---the Cauchy--Riemann equations guarantee $\nabla\phi\perp\nabla\psi$
+wherever $f'(\zeta)\neq0$, which is everywhere except at the vertices
+of the target polygon where $f'$ vanishes like
+$(\zeta-\zeta_k)^{\alpha_k-1}$~\citep[Thm.~5.4.1]{AF03}.
+This orthogonality is the definitive visual confirmation that the SC
+map is conformal.
+
+\begin{figure}[h]
+  \centering
+  \begin{subfigure}[b]{0.48\textwidth}
+    \includegraphics[width=\textwidth]{figures/fig2_streamlines.png}
+    \caption{Streamlines $\psi=\mathrm{const}$ (blue).}
+  \end{subfigure}\hfill
+  \begin{subfigure}[b]{0.48\textwidth}
+    \includegraphics[width=\textwidth]{figures/fig4_combined.png}
+    \caption{Conformal grid: streamlines (blue) + equipotentials (red).}
+  \end{subfigure}
+  \caption{Uniform ideal flow $W=U\zeta$ in $\Omega$. Streamlines are the
+  forward images of horizontal lines $\Imag(\zeta)=\eta_0$ in $\HH$;
+  equipotentials are images of vertical lines $\Real(\zeta)=\xi_0$.
+  Orthogonality of the two families confirms conformality of the map.}
+  \label{fig:uniform}
+\end{figure}
+
+\subsection{Terrain-Corrected Flow}
+
+Figure~\ref{fig:terrain} shows the streamlines under the terrain potential
+\eqref{eq:terrain}. Compared to the uniform baseline, streamlines shift
+eastward (toward lower elevation) throughout the western half of the domain,
+reproducing the slope-driven drainage pattern of Boulder's actual topography.
+Red triangles mark the high-elevation polygon vertices ($\approx1770$\,m,
+western side), which act as local sources pushing flow into the domain;
+blue triangles mark the low-elevation vertices ($\approx1570$\,m, eastern
+side), acting as sinks. The deflection is most pronounced along the
+Flatirons-facing western boundary, where the RBF-fitted elevation gradient
+is steepest.
+
+\begin{figure}[h]
+  \centering
+  \includegraphics[width=0.73\textwidth]{figures/fig5_terrain_flow.png}
+  \caption{Terrain-corrected streamlines (green) and equipotentials (amber)
+  under potential \eqref{eq:terrain}. Red triangles: high-elevation source
+  vertices ($\approx1770$\,m); blue triangles: low-elevation sink vertices
+  ($\approx1570$\,m). Streamlines deflect eastward relative to the uniform
+  baseline, reproducing the slope-driven wind pattern characteristic of
+  Boulder's foothill terrain.}
+  \label{fig:terrain}
+\end{figure}
+
+\subsection{Urban Core as Interior Obstacle}
+
+Figure~\ref{fig:urban} shows the doubly-connected flow \eqref{eq:urban}.
+The downtown commercial core (obtained from OSMnx~\citep{BG17} landuse
+data, 6-vertex convex hull, $0.13$\,km$^2$) appears as the purple polygon.
+Its pre-image in $\HH$ under $f^{-1}$ is enclosed by a circle of radius
+$a$ centred at $\zeta_0\in\HH$; the Milne-Thomson dipole term in
+\eqref{eq:urban} enforces no-penetration on this circle, while the image
+term $Ua^2/(\bar\zeta-\bar\zeta_0)$ simultaneously preserves $\psi=0$ on
+$\RR$.
+
+We see from Figure~\ref{fig:urban} that streamlines visibly deflect around
+the obstacle, accelerating on its lateral flanks---consistent with the classical
+cylinder-in-crossflow pattern from ideal flow theory~\citep[Ch.~13]{MT68}. The
+Milne-Thomson correction introduces a dipole singularity in $\HH$, which
+maps to a local flow acceleration in $\Omega$ around the urban core.
+
+\begin{figure}[h]
+  \centering
+  \includegraphics[width=0.73\textwidth]{figures/fig7_urban_flow.png}
+  \caption{Doubly-connected flow \eqref{eq:urban} with the downtown Boulder
+  urban core (purple) treated as an impenetrable obstacle. Streamlines
+  deflect around the obstacle; flow accelerates on the flanks. The
+  Milne-Thomson circle theorem enforces exact no-penetration on the
+  approximate circular pre-image in $\HH$.}
+  \label{fig:urban}
+\end{figure}
+
+\subsection{Road-Vortex Flow}
+
+Figure~\ref{fig:road} presents the road-vortex flow \eqref{eq:road}.
+Of the 12 highest-degree OSM road intersections (primary through tertiary
+roads) inside $\Omega$, 11 were successfully mapped to $\HH$ via the SC
+inverse map; one intersection was dropped due to inverse-solver failure
+near the boundary. Orange triangles mark CCW vortices ($\Gamma>0$, north
+of the polygon centroid); blue triangles mark CW vortices ($\Gamma<0$,
+south). We see from Figure~\ref{fig:road} that local eddies are visible
+around each vortex location, and the overall shear pattern---CCW in the
+northern half, CW in the southern half---approximates the vortex-pair
+structure observed in Boulder's prevailing westerly flow regime, where
+the Flatirons deflect the wind jet northward along the foothills.
+
+\begin{figure}[h]
+  \centering
+  \includegraphics[width=0.73\textwidth]{figures/fig9_road_flow.png}
+  \caption{Road-vortex flow \eqref{eq:road}. Point vortices at 11 OSM
+  road intersections (primary through tertiary roads). Orange triangles:
+  CCW vortices north of the polygon centroid ($\Gamma>0$). Blue triangles:
+  CW vortices south ($\Gamma<0$). Local eddies are visible around each
+  intersection; the CCW/CW dipole pattern is consistent with Boulder's
+  prevailing westerly flow shear.}
+  \label{fig:road}
+\end{figure}
+
+\subsection{Four-Model Comparison}
+
+Figure~\ref{fig:comparison} presents all four models side by side at
+identical contour levels. The progressive physical enrichment is apparent:
+the uniform flow establishes the baseline conformal grid; the terrain
+correction bends streamlines eastward (downhill) throughout the western
+half; the urban obstacle introduces a local stagnation region and
+acceleration flanks around the downtown core; and the road-vortex model
+superimposes organised local circulation at each intersection node.
+Crucially, every panel is computed from the same forward SC map and the
+same normalised polygon---the only difference between panels is the
+analytic form of $W(\zeta)$. This illustrates the modular power of the
+conformal-mapping framework: physical complexity is added by modifying
+the potential in $\HH$, not by re-meshing or re-solving a PDE in $\Omega$.
+
+\begin{figure}[h]
+  \centering
+  \includegraphics[width=\textwidth]{figures/fig11_four_way_comparison.png}
+  \caption{Four-way comparison at identical contour levels. From left to
+  right: (1) uniform flow $W=U\zeta$; (2) terrain-corrected potential
+  \eqref{eq:terrain}; (3) urban-obstacle potential \eqref{eq:urban};
+  (4) road-vortex potential \eqref{eq:road}. All panels share the same
+  SC map $f:\HH\to\Omega$; physical enrichment is achieved by modifying
+  $W(\zeta)$ in $\HH$.}
+  \label{fig:comparison}
+\end{figure}
+
+% ═════════════════════════════════════════════════════════════════════════════
+\section{Conclusions and Future Directions}
+\label{sec:conclusions}
+% ═════════════════════════════════════════════════════════════════════════════
+
+We have demonstrated that the Schwarz--Christoffel transformation provides
+a clean, exact framework for ideal fluid flow in an irregular polygonal domain.
+The forward-map approach---evaluating analytically tractable potentials in
+$\HH$ and mapping the results to $\Omega$---yields artifact-free streamlines
+that satisfy the no-penetration condition exactly, with no discretization of the
+boundary and no numerical inversion of $f$ for the uniform flow case. Four
+physically motivated complex potentials were derived and visualised; each
+extends the previous by an additive term that preserves the boundary condition
+via the method of images.
+
+The principal mathematical content is the interplay between conformal-mapping
+theory (Riemann Mapping Theorem, SC integral formula, interior angle structure,
+M\"obius normalisation) and ideal-flow theory (complex potential, circle theorem,
+point vortices, method of images). The SC formula \eqref{eq:SC} encodes the
+polygon geometry directly through the exponents $\alpha_k-1$: each vertex angle
+appears as a branch-point strength of the integrand. The Cauchy--Riemann equations,
+through the conformality of $f$, guarantee that every solution of Laplace's
+equation in $\HH$ pulls back to a solution in $\Omega$; this is the fundamental
+reason why conformal mapping works for fluid flow.
+
+Numerically, the softmax reparameterisation of the pre-vertex problem transforms
+a constrained optimisation into an unconstrained one, enabling Levenberg--Marquardt
+to converge reliably. The forward-map approach avoids the per-point Newton iterations
+of the inverse map at the cost of a scattered-data interpolation step.
+
+\paragraph{Future directions.}
+Several extensions are natural.
+
+\begin{itemize}[leftmargin=2em]
+
+\item \textbf{Exact doubly-connected SC map.} The Milne-Thomson approximation
+  \eqref{eq:urban} has error $O((a/\Imag\,\zeta_0)^2)$. The achieved ratio
+  $\Imag(\zeta_0)/a\approx2.0$ gives $\sim\!25\%$ error. An exact doubly-connected
+  SC map (Driscoll--Trefethen, Chapter~5) would give a rigorous treatment
+  of the doubly-connected domain.
+
+\item \textbf{Other city shapes.} The pipeline is city-agnostic.
+  Manhattan (near-rectangular) and Los Angeles (highly non-convex) would
+  illustrate how the SC exponents encode shape complexity and crowding.
+
+\item \textbf{Multiple obstacles.} The city may contain several distinct
+  obstacles. The Schottky-double conformal map or an iterative circle-theorem
+  application could handle multiply-connected domains of arbitrary genus.
+
+\item \textbf{Viscous correction.} The Stokes stream function satisfies a
+  biharmonic equation $\nabla^4\psi=0$. Comparing ideal and Stokes streamlines
+  would quantify the effect of viscosity near the boundary.
+
+\item \textbf{Time-dependent flow.} Adding a time-dependent circulation
+  $\Gamma(t)$ around the domain or obstacle would model unsteady effects
+  such as gust events, which are common in Boulder's complex terrain.
+
+\end{itemize}
+
+% ── Bibliography ─────────────────────────────────────────────────────────────
+\bibliography{refs}
+
+% ═════════════════════════════════════════════════════════════════════════════
+\appendix
+\section{Supplementary Figures}
+\label{app:figures}
+% ═════════════════════════════════════════════════════════════════════════════
+
+The following figures complement those in Section~\ref{sec:results}. Figures
+\ref{fig:equipotentials} and \ref{fig:terrain_compare} provide additional
+detail on the uniform-flow and terrain results respectively; Figures
+\ref{fig:three_way} and \ref{fig:road_compare} are alternative comparison
+panels discussed in the context of Figure~\ref{fig:comparison}.
+
+\begin{figure}[H]
+  \centering
+  \includegraphics[width=0.72\textwidth]{figures/fig3_equipotentials.png}
+  \caption{Equipotential lines ($\phi=\mathrm{const}$, red) for uniform flow
+  $W=U\zeta$, shown without streamlines for clarity. Each curve is the forward
+  image of a vertical half-line $\Real(\zeta)=\xi_0$ in $\HH$.}
+  \label{fig:equipotentials}
+\end{figure}
+
+\begin{figure}[H]
+  \centering
+  \includegraphics[width=0.88\textwidth]{figures/fig6_flow_comparison.png}
+  \caption{Side-by-side: uniform flow (left) vs.\ terrain-corrected flow
+  (right) at the same contour levels. The eastward shift of streamlines under
+  the terrain correction \eqref{eq:terrain} is evident throughout the western
+  portion of the domain.}
+  \label{fig:terrain_compare}
+\end{figure}
+
+\begin{figure}[H]
+  \centering
+  \includegraphics[width=\textwidth]{figures/fig8_three_way_comparison.png}
+  \caption{Three-way comparison: uniform / terrain-corrected / urban-obstacle
+  flow at identical contour levels. The progressive enrichment of the physical
+  model is apparent in the streamline morphology of each panel.}
+  \label{fig:three_way}
+\end{figure}
+
+\begin{figure}[H]
+  \centering
+  \includegraphics[width=0.88\textwidth]{figures/fig10_road_vs_uniform.png}
+  \caption{Side-by-side: uniform flow (left) vs.\ road-vortex flow (right).
+  The road-vortex correction introduces organised local circulation absent
+  from the uniform baseline, particularly along the Broadway and 28th St
+  corridors.}
+  \label{fig:road_compare}
+\end{figure}
+
+% ═════════════════════════════════════════════════════════════════════════════
+\section{Code and Reproducibility}
+\label{app:code}
+% ═════════════════════════════════════════════════════════════════════════════
+
+All source code is publicly available at
+\url{https://github.com/McDonaldCrispyThigh/Ideal-Flow-via-Schwarz-Christoffel}.
+The full pipeline is reproduced by:
+\begin{verbatim}
+  pip install -r requirements.txt
+  python main.py --shapefile data/raw/tl_2025_08_place \
+                 --terrain --urban --roads --grid 80
+\end{verbatim}
+Key modules: \texttt{src/polygon.py} (boundary preprocessing),
+\texttt{src/angles.py} (interior angle computation),
+\texttt{src/sc\_solver.py} (SC parameter problem, Gauss--Legendre quadrature,
+forward map),
+\texttt{src/terrain.py} (USGS 3DEP API, RBF surface, per-vertex sources),
+\texttt{src/urban.py} (OSM obstacle, Welzl minimum enclosing circle),
+\texttt{src/roads.py} (OSM road intersections, SC inverse map, vortex placement),
+\texttt{src/sc\_solver\_dc.py} (combined potentials), and
+\texttt{src/visualization.py} (publication-quality figures).
+
+\noindent\textbf{Software:} Python~3.14, NumPy~2.2, SciPy~1.15,
+Shapely~2.0, GeoPandas~1.0, OSMnx~2.0 \citep{BG17}, Matplotlib~3.10,
+pyproj~3.7, tqdm~4.67.
+
+\end{document}
