@@ -311,8 +311,8 @@ $f'(\zeta)\neq0$.
 \subsection{Terrain-Corrected Flow}
 \label{sec:terrain}
 
-Boulder's terrain drops approximately 450\,m from west ($\sim$2057\,m) to east
-($\sim$1607\,m). Topographic slope drives a wind-speed component that acts as a
+Boulder's terrain drops approximately 480\,m from west ($\sim$2057\,m) to east
+($\sim$1576\,m). Topographic slope drives a wind-speed component that acts as a
 source (uphill face) or sink (downhill face) at each boundary segment. We model
 this by one source/sink singularity per polygon vertex in $\HH$:
 \begin{equation}
@@ -418,6 +418,8 @@ Figure~\ref{fig:uniform}b) are visually orthogonal to the streamlines
 throughout the interior---the Cauchy--Riemann equations guarantee
 $\nabla\phi\perp\nabla\psi$ wherever $f'(\zeta)\neq0$~\citep[Thm.~5.4.1]{AF03}.
 This orthogonality is the definitive visual confirmation of conformality.
+Equipotential lines alone are shown in Figure~\ref{fig:equipotentials}
+(Appendix~\ref{app:figures}) for clarity.
 
 \subsection{Terrain-Corrected Flow}
 
@@ -426,7 +428,7 @@ the terrain potential \eqref{eq:terrain}. Compared to the uniform baseline,
 streamlines shift eastward (toward lower elevation) throughout the western half,
 reproducing the slope-driven drainage pattern of Boulder's topography.
 High-elevation source vertices (2057\,m, western side) push flow into the
-domain; low-elevation sink vertices (1607\,m, eastern side) draw it out.
+domain; low-elevation sink vertices (1576\,m, eastern side) draw it out.
 The deflection is most pronounced along the Flatirons-facing western boundary,
 where the RBF-fitted elevation gradient is steepest.
 
@@ -580,7 +582,7 @@ comparison panels.
   \caption{Terrain-corrected streamlines (green) and equipotentials (amber)
   under potential \eqref{eq:terrain}. Red triangles: high-elevation source
   vertices (2057\,m); blue triangles: low-elevation sink vertices
-  (1607\,m). Streamlines deflect eastward relative to the uniform
+  (1576\,m). Streamlines deflect eastward relative to the uniform
   baseline, reproducing the slope-driven wind pattern characteristic of
   Boulder's foothill terrain.}
   \label{fig:terrain}
