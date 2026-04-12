@@ -17,6 +17,7 @@ boundary polygon. Three progressively richer physical models are implemented:
 | Uniform flow | $U\zeta$ | Ideal parallel flow |
 | Terrain-corrected | $U\zeta + \sum_k q_k \log(\zeta - s_k)$ | Slope-driven sources/sinks from real DEM data |
 | Urban obstacle | $U\zeta + \frac{Ua^2}{\zeta - \zeta_0} + \frac{Ua^2}{\bar\zeta - \bar\zeta_0}$ | Circle-theorem no-penetration obstacle |
+| Road-vortex | $U\zeta + \sum_k \frac{-i\Gamma_k}{2\pi}[\log(\zeta-s_k)+\log(\zeta-\bar s_k)]$ | Point vortices at OSM road intersections |
 
 The SC map $f : \mathbb{H} \to \Omega$ sends the upper half-plane to the Boulder polygon,
 converting analytically tractable potentials in $\mathbb{H}$ into streamlines and
@@ -63,6 +64,21 @@ $$W_\text{urban}(\zeta) = U\zeta + \frac{Ua^2}{\zeta - \zeta_0} + \frac{Ua^2}{\b
 Accuracy is $O\!\left((a/\text{Im}\,\zeta_0)^2\right)$; the run below achieves
 $\text{Im}(\zeta_0)/a = 5.36$, giving approximately 3.5% error.
 
+### Road-Vortex Model (OSM Intersections)
+
+Major road intersections generate local circulation in urban atmospheric flow (traffic
+turbulence, building-induced channelling, heat-island convection). Each intersection is
+treated as a point vortex in $\mathbb{H}$:
+
+$$W_\text{road}(\zeta) = U\zeta + \sum_k \frac{-i\Gamma_k}{2\pi}
+  \Bigl[\log(\zeta - s_k) + \log(\zeta - \bar{s}_k)\Bigr]$$
+
+The image term $\log(\zeta - \bar{s}_k)$ restores $\psi = 0$ on $\mathbb{R}$ (no-penetration
+on $\partial\Omega$). Intersection positions $s_k \in \mathbb{H}$ are obtained by applying the
+SC inverse map to each OSM node. Circulation $\Gamma_k$ is proportional to node degree;
+sign is positive (CCW) north of the polygon centroid and negative (CW) south, producing a
+vortex-pair structure consistent with Boulder's prevailing westerly-flow shear.
+
 ---
 
 ## Pipeline
@@ -71,8 +87,11 @@ $\text{Im}(\zeta_0)/a = 5.36$, giving approximately 3.5% error.
 # Uniform flow only
 python main.py --shapefile data/raw/tl_2025_08_place --grid 80
 
-# Full pipeline with terrain and urban obstacle
-python main.py --shapefile data/raw/tl_2025_08_place --terrain --urban --grid 80
+# Full pipeline: terrain + urban obstacle + road vortices
+python main.py --shapefile data/raw/tl_2025_08_place --terrain --urban --roads --grid 80
+
+# Road-vortex model only (fast, no USGS API calls)
+python main.py --shapefile data/raw/tl_2025_08_place --roads --grid 80
 
 # Quick demo (no shapefile needed)
 python main.py --demo
@@ -81,12 +100,13 @@ python main.py --demo
 | Stage | Detail | Value |
 |-------|--------|-------|
 | Raw polygon | TIGER/Line vertices | 1935 |
-| Douglas-Peucker simplification | Tolerance | adaptive → ~20 vertices |
-| Extreme-angle removal | $\alpha \notin [0.15\pi,\, 1.85\pi]$ dropped | ~20 → $\geq 10$ vertices |
-| SC parameter solve | LM residual cost | depends on final $n$ |
+| Douglas-Peucker simplification | Tolerance | adaptive → ~14 vertices |
+| Extreme-angle removal | $\alpha \notin [0.35\pi,\, 1.75\pi]$ dropped | ~14 → 11 vertices |
+| SC parameter solve | LM residual cost | $\sim 1.5\times10^{-3}$ |
 | Terrain elevation | USGS 3DEP sample points | 81 / 81 (100%) |
 | Urban obstacle | OSM commercial polygons | 73 raw → 6-vertex, 0.13 km² |
 | Circle separation | $\text{Im}(\zeta_0)/a$ | 5.36 |
+| Road intersections | OSM primary/secondary/tertiary | 12 inside polygon, 11 vortices |
 
 ---
 
@@ -138,7 +158,8 @@ Orthogonality throughout the interior confirms the map is conformal.
 │   ├── flow.py             Forward map, parametric curves, and flow grid
 │   ├── terrain.py          DEM elevation (RBF) and per-vertex sources
 │   ├── urban.py            Urban-core polygon (OSM) and coordinate conversion
-│   ├── sc_solver_dc.py     Circle-theorem obstacle in H
+│   ├── roads.py            OSM road intersections → point vortices in ℍ
+│   ├── sc_solver_dc.py     Circle-theorem obstacle + combined potentials in ℍ
 │   └── visualization.py    Figure generation
 ├── figures/                Generated output (see above)
 ├── main.py                 Full pipeline CLI
@@ -166,9 +187,12 @@ pip install -r requirements.txt
 | `--terrain` | off | Terrain-corrected flow (requires USGS network access) |
 | `--urban` | off | Urban-obstacle doubly-connected flow (requires OSMnx) |
 | `--urban-method` | `osmnx` | `osmnx` (live OSM) or `fallback` (hardcoded polygon) |
+| `--roads` | off | Road-vortex flow from OSM intersection data |
+| `--road-method` | `osmnx` | `osmnx` (live OSM) or `fallback` (hardcoded intersections) |
+| `--road-n-max` | 12 | Maximum road intersections to use as vortex sources |
 | `--grid N` | 80 | Flow-grid resolution (N × N) |
-| `--min-vertices` | 18 | Min vertices after Douglas-Peucker |
-| `--max-vertices` | 30 | Max vertices after Douglas-Peucker |
+| `--min-vertices` | 12 | Min vertices after Douglas-Peucker |
+| `--max-vertices` | 16 | Max vertices after Douglas-Peucker |
 
 ---
 

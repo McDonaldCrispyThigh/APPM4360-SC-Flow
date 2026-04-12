@@ -9,7 +9,8 @@ Usage
     python main.py --demo --grid 40    # quick test
     python main.py --shapefile data/raw/tl_2025_08_place --terrain
     python main.py --shapefile data/raw/tl_2025_08_place --urban
-    python main.py --shapefile data/raw/tl_2025_08_place --terrain --urban
+    python main.py --shapefile data/raw/tl_2025_08_place --roads
+    python main.py --shapefile data/raw/tl_2025_08_place --terrain --urban --roads
 """
 
 from __future__ import annotations
@@ -42,9 +43,13 @@ from src.visualization import (
     plot_terrain_combined,
     plot_flow_comparison,
     plot_urban_flow,
+    plot_road_flow,
     plot_three_way_comparison,
+    plot_four_way_comparison,
     URBAN_STREAM,
     URBAN_EQUIP,
+    ROAD_STREAM,
+    ROAD_EQUIP,
 )
 
 logging.basicConfig(
@@ -73,8 +78,11 @@ def run_pipeline(
     max_vertices: int = 16,
     terrain: bool = False,
     urban: bool = False,
+    roads: bool = False,
     urban_method: str = "osmnx",
     urban_vertices: int = 8,
+    road_method: str = "osmnx",
+    road_n_max: int = 12,
     n_per_edge: int = 3,
     n_interior: int = 25,
     max_workers: int = 6,
@@ -105,8 +113,14 @@ def run_pipeline(
     logger.info("Polygon: %d vertices  (center=%.1f%+.1fj, scale=%.1f)",
                 n, center.real, center.imag, scale)
 
-    # ── Build a Shapely polygon in normalised coords ──
+    # ── Build Shapely polygons in normalised coords AND UTM ──
     norm_polygon = complex_to_polygon(z_poly)
+
+    # Rebuild UTM polygon from the angle-filtered vertices so that
+    # compute_terrain_info sees exactly the same n vertices as sc_params.zk
+    from shapely.geometry import Polygon as ShapelyPolygon
+    z_utm = z_poly * scale + center
+    simplified_utm = ShapelyPolygon([(z.real, z.imag) for z in z_utm])
 
     # ══════════════════════════════════════════════════════════════════
     # STEP 2 - Interior angles
@@ -229,6 +243,52 @@ def run_pipeline(
         logger.warning("--urban requires a real shapefile; skipped in demo mode")
 
     # ══════════════════════════════════════════════════════════════════
+    # STEP 4d - Road-vortex flow (optional)
+    # ══════════════════════════════════════════════════════════════════
+    road_info  = None
+    Psi_r = Phi_r = None
+
+    if roads and not demo:
+        from src.roads import compute_road_info
+
+        logger.info("── Road mode enabled ──")
+        road_info = compute_road_info(
+            simplified_utm,
+            center=center,
+            scale=scale,
+            sc_params=params,
+            method=road_method,
+            n_max=road_n_max,
+        )
+
+        if road_info is None:
+            logger.error("Road vortex computation failed - skipping road model")
+        else:
+            # Build road potential (terrain correction optional)
+            terrain_sources = terrain_info.sources if terrain_info else None
+            if terrain_sources:
+                from src.sc_solver_dc import road_terrain_potential
+                road_pot = lambda zeta: road_terrain_potential(
+                    zeta, U=1.0,
+                    terrain_sources=terrain_sources,
+                    road_vortices=road_info.vortices,
+                )
+            else:
+                from src.roads import road_potential
+                road_pot = lambda zeta: road_potential(zeta, U=1.0,
+                                                       vortices=road_info.vortices)
+
+            logger.info("Computing road-vortex flow grid …")
+            _, _, Psi_r, Phi_r, _ = compute_flow_grid(
+                norm_polygon, params, n_grid=n_grid,
+                potential_fn=road_pot, zeta_cache=Zeta,
+            )
+            n_r = int(np.isfinite(Psi_r).sum())
+            logger.info("Road flow grid: %d points with valid ψ/φ", n_r)
+    elif roads and demo:
+        logger.warning("--roads requires a real shapefile; skipped in demo mode")
+
+    # ══════════════════════════════════════════════════════════════════
     # STEP 5 - Figures
     # ══════════════════════════════════════════════════════════════════
     logger.info("Generating figures …")
@@ -271,7 +331,6 @@ def run_pipeline(
                 norm_polygon, norm_poly_inner,
             )
         else:
-            # Two-way uniform vs urban (with correct labels)
             from src.visualization import plot_flow_comparison as _pfc
             _pfc(
                 XX, YY, Psi, Phi, Psi_u, Phi_u, norm_polygon,
@@ -280,6 +339,31 @@ def run_pipeline(
                 suptitle="Flow Comparison - Uniform vs. Urban Obstacle",
                 stream_color_right=URBAN_STREAM,
                 equip_color_right=URBAN_EQUIP,
+            )
+
+    # Figs 9-10: road-vortex flow (if computed)
+    if Psi_r is not None:
+        plot_road_flow(
+            XX, YY, Psi_r, Phi_r, norm_polygon,
+            road_info=road_info,
+            norm_center=center,
+            norm_scale=scale,
+        )
+        # Side-by-side: uniform vs road-vortex
+        from src.visualization import plot_flow_comparison as _pfc
+        _pfc(
+            XX, YY, Psi, Phi, Psi_r, Phi_r, norm_polygon,
+            filename="fig10_road_vs_uniform.png",
+            title_right=r"Road-Vortex Flow  (OSM intersections)",
+            suptitle="Flow Comparison - Uniform vs. Road-Vortex",
+            stream_color_right=ROAD_STREAM,
+            equip_color_right=ROAD_EQUIP,
+        )
+        # Four-way comparison when all three enhancements were run
+        if Psi_t is not None and Psi_u is not None:
+            plot_four_way_comparison(
+                XX, YY, Psi, Psi_t, Psi_u, Psi_r,
+                norm_polygon, norm_poly_inner,
             )
 
     logger.info("Done - figures saved to figures/")
@@ -298,6 +382,13 @@ def main():
                    help="Data source for urban polygon (default: osmnx)")
     p.add_argument("--urban-vertices", type=int, default=8,
                    help="Target vertex count for simplified urban polygon")
+    p.add_argument("--roads", action="store_true",
+                   help="Enable road-vortex flow from OSM intersection data (requires shapefile)")
+    p.add_argument("--road-method", type=str, default="osmnx",
+                   choices=["osmnx", "fallback"],
+                   help="Data source for road intersections (default: osmnx)")
+    p.add_argument("--road-n-max", type=int, default=12,
+                   help="Maximum number of road intersections to use as vortices")
     p.add_argument("--grid", type=int, default=80)
     p.add_argument("--tolerance", type=float, default=1500.0)
     p.add_argument("--min-vertices", type=int, default=12)
@@ -316,6 +407,8 @@ def main():
         max_vertices=a.max_vertices, terrain=a.terrain,
         urban=a.urban, urban_method=a.urban_method,
         urban_vertices=a.urban_vertices,
+        roads=a.roads, road_method=a.road_method,
+        road_n_max=a.road_n_max,
         n_per_edge=a.n_per_edge, n_interior=a.n_interior,
         max_workers=a.max_workers,
     )

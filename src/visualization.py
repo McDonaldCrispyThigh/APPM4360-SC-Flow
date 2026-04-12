@@ -35,6 +35,10 @@ URBAN_BOUNDARY = "#5C2D91"   # deep purple for urban core boundary
 URBAN_FILL     = "#EDE7F6"   # lavender for urban core fill
 URBAN_STREAM   = "#1A5276"   # dark blue for urban-obstacle streamlines
 URBAN_EQUIP    = "#7B241C"   # dark red for urban-obstacle equipotentials
+ROAD_STREAM    = "#7B3F00"   # brown for road-vortex streamlines
+ROAD_EQUIP     = "#1A6B4B"   # teal for road-vortex equipotentials
+VORTEX_POS     = "#D4380D"   # orange-red for CCW (positive) vortices
+VORTEX_NEG     = "#1677FF"   # blue for CW (negative) vortices
 FIG_DIR        = Path("figures")
 
 
@@ -435,6 +439,125 @@ def plot_urban_flow(
         "Doubly-Connected Flow - Urban Core as Interior Obstacle\n"
         r"$W(\zeta) = U\zeta + Ua^2/(\zeta-\zeta_0) + Ua^2/(\zeta-\bar\zeta_0)$",
         fontsize=12, fontweight="bold",
+    )
+    plt.tight_layout()
+    if save:
+        fig.savefig(FIG_DIR / filename, bbox_inches="tight")
+        pdf_name = Path(filename).with_suffix(".pdf").name
+        fig.savefig(FIG_DIR / pdf_name, bbox_inches="tight")
+        logger.info("Saved %s + %s", FIG_DIR / filename, FIG_DIR / pdf_name)
+    return fig
+
+
+def plot_road_flow(
+    XX, YY, Psi_r, Phi_r,
+    norm_polygon: Polygon,
+    road_info=None,
+    z_poly: Optional[np.ndarray] = None,
+    norm_center: complex = 0.0,
+    norm_scale: float = 1.0,
+    n_levels: int = 28,
+    save: bool = True,
+    filename: str = "fig9_road_flow.png",
+) -> plt.Figure:
+    """Road-vortex flow: streamlines (brown) + equipotentials (teal).
+
+    Annotates vortex positions with direction markers (CCW/CW arrows).
+    """
+    _ensure_fig_dir()
+    fig, ax = plt.subplots(figsize=(10, 10), dpi=150)
+    _draw_boundary(ax, norm_polygon)
+
+    for data, color, lw in [(Psi_r, ROAD_STREAM, 0.85), (Phi_r, ROAD_EQUIP, 0.6)]:
+        valid = np.isfinite(data)
+        if valid.any():
+            lo, hi = np.nanmin(data), np.nanmax(data)
+            levels = np.linspace(lo, hi, n_levels + 2)[1:-1]
+            ax.contour(XX, YY, data, levels=levels,
+                       colors=color, linewidths=lw, zorder=3)
+
+    # Annotate vortex positions in the physical (normalised) domain
+    if road_info is not None and norm_scale > 0:
+        from .sc_solver import sc_map_single
+        # road_info.vortices has (zeta, Gamma) in ℍ; convert to z via forward map
+        # We mark them at the intersection positions (UTM → normalised) instead
+        coords_utm = road_info.intersection_positions_utm
+        z_norm = (coords_utm[:, 0] + 1j * coords_utm[:, 1] - norm_center) / norm_scale
+        for k, (zn, (_, Gamma)) in enumerate(
+            zip(z_norm, road_info.vortices)
+        ):
+            color = VORTEX_POS if Gamma > 0 else VORTEX_NEG
+            marker = "^" if Gamma > 0 else "v"
+            label = "CCW vortex" if (Gamma > 0 and k == 0) else (
+                    "CW vortex"  if (Gamma < 0 and k == 1) else None)
+            ax.plot(zn.real, zn.imag, marker, color=color,
+                    ms=10, zorder=10, label=label,
+                    markeredgecolor="white", markeredgewidth=0.5)
+
+        handles, labels = ax.get_legend_handles_labels()
+        if handles:
+            ax.legend(handles, labels, loc="lower right",
+                      fontsize=9, framealpha=0.9)
+
+    ax.set_aspect("equal"); ax.axis("off")
+    ax.set_title(
+        "Road-Vortex Flow - Major Intersection Circulation\n"
+        r"$W(\zeta) = U\zeta + \sum_k \frac{-i\Gamma_k}{2\pi}"
+        r"[\log(\zeta-s_k)+\log(\zeta-\bar s_k)]$",
+        fontsize=11, fontweight="bold",
+    )
+    plt.tight_layout()
+    if save:
+        fig.savefig(FIG_DIR / filename, bbox_inches="tight")
+        pdf_name = Path(filename).with_suffix(".pdf").name
+        fig.savefig(FIG_DIR / pdf_name, bbox_inches="tight")
+        logger.info("Saved %s + %s", FIG_DIR / filename, FIG_DIR / pdf_name)
+    return fig
+
+
+def plot_four_way_comparison(
+    XX, YY,
+    Psi_uniform,
+    Psi_terrain,
+    Psi_urban,
+    Psi_road,
+    norm_polygon_outer: Polygon,
+    norm_polygon_inner: Optional[Polygon] = None,
+    n_levels: int = 20,
+    save: bool = True,
+    filename: str = "fig10_four_way_comparison.png",
+) -> plt.Figure:
+    """Four-panel comparison: uniform / terrain / urban / road-vortex.
+
+    The definitive summary figure showing all physical enhancements.
+    """
+    _ensure_fig_dir()
+    fig, axes = plt.subplots(1, 4, figsize=(30, 8), dpi=150)
+
+    configs = [
+        (Psi_uniform, STREAM_COLOR,   r"(a) Uniform  $W=U\zeta$",             None),
+        (Psi_terrain, TERRAIN_STREAM, r"(b) Terrain-corrected  (RBF sources)", None),
+        (Psi_urban,   URBAN_STREAM,   r"(c) Urban obstacle  (circle thm.)",    norm_polygon_inner),
+        (Psi_road,    ROAD_STREAM,    r"(d) Road-vortex  (OSM intersections)", None),
+    ]
+
+    for ax, (psi, color, title, inner) in zip(axes, configs):
+        _draw_boundary(ax, norm_polygon_outer)
+        if inner is not None:
+            _draw_urban(ax, inner)
+        valid = np.isfinite(psi)
+        if valid.any():
+            lo, hi = np.nanmin(psi), np.nanmax(psi)
+            levels = np.linspace(lo, hi, n_levels + 2)[1:-1]
+            ax.contour(XX, YY, psi, levels=levels,
+                       colors=color, linewidths=0.8, zorder=3)
+        ax.set_aspect("equal"); ax.axis("off")
+        ax.set_title(title, fontsize=10, fontweight="bold")
+
+    fig.suptitle(
+        "Streamline Comparison - Boulder City Polygon\n"
+        "Schwarz-Christoffel Conformal Mapping: Progressive Physical Enhancements",
+        fontsize=12, fontweight="bold", y=1.01,
     )
     plt.tight_layout()
     if save:

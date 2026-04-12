@@ -117,7 +117,7 @@ def compute_urban_obstacle(
 
     if n_fail > len(boundary_pts) // 2:
         logger.error(
-            "Too many inverse-map failures (%d / %d) — cannot fit obstacle",
+            "Too many inverse-map failures (%d / %d) - cannot fit obstacle",
             n_fail, len(boundary_pts),
         )
         return None
@@ -133,7 +133,7 @@ def compute_urban_obstacle(
 
     if zeta0.imag <= radius:
         logger.warning(
-            "Obstacle circle (ζ₀=%.3f+%.3fj, a=%.3f) touches or crosses ℝ — "
+            "Obstacle circle (ζ₀=%.3f+%.3fj, a=%.3f) touches or crosses ℝ - "
             "lifting centre upward",
             zeta0.real, zeta0.imag, radius,
         )
@@ -214,6 +214,47 @@ def urban_terrain_potential(
     return urban_potential(zeta, U, obstacle) + terrain_correction
 
 
+def road_terrain_potential(
+    zeta: complex,
+    U: float,
+    terrain_sources,
+    road_vortices,
+) -> complex:
+    """Combined terrain + road-vortex potential (no urban obstacle).
+
+    W(ζ) = U·ζ  +  terrain sources  +  road vortices
+    """
+    from .terrain import terrain_potential
+    from .roads import road_potential
+    W_terrain = terrain_potential(zeta, U, terrain_sources)
+    W_road_correction = road_potential(zeta, 0.0, road_vortices)   # U=0 so no extra Uζ
+    return W_terrain + W_road_correction
+
+
+def full_potential(
+    zeta: complex,
+    U: float,
+    obstacle: UrbanObstacle,
+    terrain_sources,
+    road_vortices,
+) -> complex:
+    """Full combined potential: urban obstacle + terrain + road vortices.
+
+    W(ζ) = U·ζ  +  Ua²/(ζ−ζ₀)  +  Ua²/(ζ−ζ̄₀)
+           +  Σ_j (Q_j/2π)·[log(ζ−s_j) + log(ζ−s̄_j)]   (terrain)
+           +  Σ_k (−iΓ_k/2π)·[log(ζ−s_k) + log(ζ−s̄_k)] (roads)
+
+    Each extra term preserves ψ = 0 on ℝ via the method of images.
+    """
+    from .terrain import terrain_potential
+    from .roads import road_potential
+    W_urban = urban_potential(zeta, U, obstacle)
+    W_terrain_full = terrain_potential(zeta, U, terrain_sources)
+    terrain_correction = W_terrain_full - U * zeta
+    W_road_full = road_potential(zeta, 0.0, road_vortices)
+    return W_urban + terrain_correction + W_road_full
+
+
 # ── Geometry helpers ───────────────────────────────────────────────────────
 
 def _sample_boundary(poly: Polygon, n_pts: int) -> list[complex]:
@@ -240,14 +281,70 @@ def _sample_boundary(poly: Polygon, n_pts: int) -> list[complex]:
 def _minimum_enclosing_circle(
     points: np.ndarray,
 ) -> tuple[complex, float]:
-    """Compute an enclosing circle for a set of complex points.
+    """Compute the minimum enclosing circle (MEC) using Welzl's algorithm.
 
-    Uses the centroid as centre and max distance as radius.
-    This is not the minimum enclosing circle in the strict sense
-    but is simple and sufficient for our application.
+    Welzl (1991) gives an expected O(n) randomised algorithm.
+    We convert the complex array to a plain list, shuffle once for
+    expected linear time, then recurse.  For the polygon sizes used
+    here (<200 vertices) the recursion depth is well within Python's
+    default limit.
     """
-    cx = points.real.mean()
-    cy = points.imag.mean()
-    centre = cx + 1j * cy
-    radius = float(np.max(np.abs(points - centre)))
-    return centre, radius
+    import random as _random
+
+    pts = list(points)
+    _random.shuffle(pts)
+
+    # ── boundary-circle constructors ──────────────────────────────────────
+
+    def _c1(p: complex) -> tuple[complex, float]:
+        return p, 0.0
+
+    def _c2(p: complex, q: complex) -> tuple[complex, float]:
+        c = (p + q) / 2
+        return c, abs(p - c)
+
+    def _c3(p: complex, q: complex, r: complex) -> tuple[complex, float]:
+        """Circumcircle of three points (circumcentre formula)."""
+        ax, ay = p.real, p.imag
+        bx, by = q.real, q.imag
+        cx, cy = r.real, r.imag
+        D = 2.0 * (ax * (by - cy) + bx * (cy - ay) + cx * (ay - by))
+        if abs(D) < 1e-12:          # collinear: take longest pair
+            d_pq, d_pr, d_qr = abs(p - q), abs(p - r), abs(q - r)
+            if d_pq >= d_pr and d_pq >= d_qr:
+                return _c2(p, q)
+            elif d_pr >= d_pq and d_pr >= d_qr:
+                return _c2(p, r)
+            else:
+                return _c2(q, r)
+        ux = ((ax**2 + ay**2) * (by - cy) +
+              (bx**2 + by**2) * (cy - ay) +
+              (cx**2 + cy**2) * (ay - by)) / D
+        uy = ((ax**2 + ay**2) * (cx - bx) +
+              (bx**2 + by**2) * (ax - cx) +
+              (cx**2 + cy**2) * (bx - ax)) / D
+        centre = ux + 1j * uy
+        return centre, abs(p - centre)
+
+    def _in_circle(c: complex, r: float, p: complex) -> bool:
+        return abs(p - c) <= r + 1e-10
+
+    # ── Welzl recursion ───────────────────────────────────────────────────
+
+    def _welzl(P: list, R: list, n: int) -> tuple[complex, float]:
+        if n == 0 or len(R) == 3:
+            if len(R) == 0:
+                return 0j, 0.0
+            elif len(R) == 1:
+                return _c1(R[0])
+            elif len(R) == 2:
+                return _c2(R[0], R[1])
+            else:
+                return _c3(R[0], R[1], R[2])
+        p = P[n - 1]
+        c, r = _welzl(P, R, n - 1)
+        if _in_circle(c, r, p):
+            return c, r
+        return _welzl(P, R + [p], n - 1)
+
+    return _welzl(pts, [], len(pts))
