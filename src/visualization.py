@@ -525,7 +525,7 @@ def plot_four_way_comparison(
     norm_polygon_inner: Optional[Polygon] = None,
     n_levels: int = 20,
     save: bool = True,
-    filename: str = "fig10_four_way_comparison.png",
+    filename: str = "fig11_four_way_comparison.png",
 ) -> plt.Figure:
     """Four-panel comparison: uniform / terrain / urban / road-vortex.
 

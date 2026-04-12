@@ -195,6 +195,14 @@ Boulder's prevailing westerly flow. Streamlines show local eddies at each inters
 Direct comparison: the road-vortex correction introduces organised local circulation
 absent from the uniform baseline, particularly along the Broadway and 28th St corridors.
 
+### Fig 11 - Four-Way Comparison (all models)
+
+![Four-way comparison](figures/fig11_four_way_comparison.png)
+
+Side-by-side: uniform flow / terrain-corrected / urban obstacle / road-vortex at the same
+contour levels. Each panel shows the progressive physical enrichment of the SC framework,
+from ideal parallel flow to a doubly-connected, terrain- and circulation-informed model.
+
 ---
 
 ## Project Structure
