@@ -319,10 +319,15 @@ def run_pipeline(
 
     # Figs 7-8: urban obstacle (if computed)
     if Psi_u is not None:
+        # Pass uniform-flow ψ range so the urban panel uses the same contour
+        # levels as the baseline, suppressing the dipole spike near ζ₀.
+        psi_ref = (float(np.nanpercentile(Psi, 5)),
+                   float(np.nanpercentile(Psi, 95))) if Psi is not None else None
         plot_urban_flow(
             XX_u, YY_u, Psi_u, Phi_u, norm_polygon,
             norm_polygon_inner=norm_poly_inner,
             obstacle=urban_obstacle,
+            psi_ref_range=psi_ref,
         )
         # Three-way comparison only when both terrain and urban were run
         if Psi_t is not None:

@@ -3,7 +3,7 @@ numpy>=1.24
 scipy>=1.10
 matplotlib>=3.7
 
-# Geospatial – for loading TIGER/Line shapefiles
+# Geospatial - for loading TIGER/Line shapefiles
 geopandas>=0.13
 shapely>=2.0
 pyproj>=3.5

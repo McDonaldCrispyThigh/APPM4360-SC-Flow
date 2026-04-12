@@ -193,7 +193,7 @@ def get_vertex_elevations(
 
     # Fall back to linear model if too few successes
     if np.sum(np.isfinite(elevations)) < 3:
-        logger.warning("Too few API results — using fallback elevation model")
+        logger.warning("Too few API results - using fallback elevation model")
         elevations = _boulder_fallback(coords)
 
     return elevations
@@ -265,12 +265,38 @@ def _fit_rbf(all_coords: np.ndarray, all_elevs: np.ndarray) -> RBFInterpolator:
     coords_n = (all_coords - centre) / scale
     rbf = RBFInterpolator(coords_n, all_elevs, kernel="thin_plate_spline")
 
-    # Log RBF R²
-    pred = rbf(coords_n)
-    ss_res = np.sum((all_elevs - pred) ** 2)
+    # 5-fold cross-validation R² (in-sample R² is always 1.0 for interpolators)
+    n_pts = len(all_elevs)
+    k = min(5, n_pts)
+    fold_size = n_pts // k
+    oof_pred = np.empty(n_pts)
+    for fold in range(k):
+        val_mask = np.zeros(n_pts, dtype=bool)
+        val_mask[fold * fold_size: (fold + 1) * fold_size] = True
+        train_mask = ~val_mask
+        rbf_fold = RBFInterpolator(
+            coords_n[train_mask], all_elevs[train_mask],
+            kernel="thin_plate_spline",
+        )
+        oof_pred[val_mask] = rbf_fold(coords_n[val_mask])
+    # Remaining samples (last partial fold, if any)
+    remainder = k * fold_size
+    if remainder < n_pts:
+        val_mask = np.zeros(n_pts, dtype=bool)
+        val_mask[remainder:] = True
+        train_mask = ~val_mask
+        rbf_fold = RBFInterpolator(
+            coords_n[train_mask], all_elevs[train_mask],
+            kernel="thin_plate_spline",
+        )
+        oof_pred[val_mask] = rbf_fold(coords_n[val_mask])
+    ss_res = np.sum((all_elevs - oof_pred) ** 2)
     ss_tot = np.sum((all_elevs - all_elevs.mean()) ** 2)
-    r2 = 1.0 - ss_res / max(ss_tot, 1e-10)
-    logger.info("RBF thin-plate-spline R² = %.4f  (109 sample points)", r2)
+    cv_r2 = 1.0 - ss_res / max(ss_tot, 1e-10)
+    logger.info(
+        "RBF thin-plate-spline 5-fold CV R² = %.4f  (%d sample points)",
+        cv_r2, n_pts,
+    )
 
     # Return a wrapper that accepts raw UTM coords
     def _eval(coords_utm: np.ndarray) -> np.ndarray:
@@ -372,7 +398,7 @@ def compute_terrain_info(
     # Normalise so max |qₖ| = Q_scale
     max_proj = np.max(np.abs(projected))
     if max_proj < 1e-8:
-        logger.warning("Terrain gradient too small — no sources added")
+        logger.warning("Terrain gradient too small - no sources added")
         q_strengths = np.zeros(n_v)
     else:
         q_strengths = Q_scale * projected / max_proj

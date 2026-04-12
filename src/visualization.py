@@ -391,7 +391,8 @@ def plot_urban_flow(
     norm_polygon_outer: Polygon,
     norm_polygon_inner: Optional[Polygon] = None,
     obstacle=None,
-    n_levels: int = 28,
+    n_levels: int = 22,
+    psi_ref_range: Optional[tuple] = None,
     save: bool = True,
     filename: str = "fig7_urban_flow.png",
 ) -> plt.Figure:
@@ -399,8 +400,13 @@ def plot_urban_flow(
 
     The urban core is drawn as a filled purple obstacle.  Streamlines
     visibly deflect around it, demonstrating the no-penetration condition.
-    If *obstacle* is provided, the mapped boundary in ℍ is annotated as
-    diagnostic metadata.
+
+    Parameters
+    ----------
+    psi_ref_range : (lo, hi) tuple from the uniform-flow Psi grid.
+        When supplied, contour levels are drawn within this range only,
+        suppressing the dipole spike near the obstacle circle and making
+        the urban panel directly comparable to the uniform-flow figure.
     """
     _ensure_fig_dir()
     fig, ax = plt.subplots(figsize=(10, 10), dpi=150)
@@ -414,9 +420,15 @@ def plot_urban_flow(
     ]:
         valid = np.isfinite(data)
         if valid.any():
-            lo, hi = np.nanmin(data), np.nanmax(data)
+            if psi_ref_range is not None:
+                lo, hi = psi_ref_range
+            else:
+                # Clip to central 90% to suppress dipole spike near obstacle
+                lo = np.nanpercentile(data, 5)
+                hi = np.nanpercentile(data, 95)
             levels = np.linspace(lo, hi, n_levels + 2)[1:-1]
-            ax.contour(XX, YY, data, levels=levels,
+            # Clip data so extreme dipole values don't create dense spirals
+            ax.contour(XX, YY, np.clip(data, lo, hi), levels=levels,
                        colors=color, linewidths=lw, zorder=3)
 
     # Annotate circle approximation in ℍ → physical coords (informational)
@@ -541,15 +553,26 @@ def plot_four_way_comparison(
         (Psi_road,    ROAD_STREAM,    r"(d) Road-vortex  (OSM intersections)", None),
     ]
 
+    # Compute a shared ψ range from uniform flow for consistent levels
+    ref_lo = np.nanpercentile(Psi_uniform, 5) if np.isfinite(Psi_uniform).any() else None
+    ref_hi = np.nanpercentile(Psi_uniform, 95) if np.isfinite(Psi_uniform).any() else None
+
     for ax, (psi, color, title, inner) in zip(axes, configs):
         _draw_boundary(ax, norm_polygon_outer)
         if inner is not None:
             _draw_urban(ax, inner)
         valid = np.isfinite(psi)
         if valid.any():
-            lo, hi = np.nanmin(psi), np.nanmax(psi)
+            if ref_lo is not None and inner is not None:
+                # Urban panel: clip to uniform range to suppress dipole spike
+                lo, hi = ref_lo, ref_hi
+                plot_data = np.clip(psi, lo, hi)
+            else:
+                lo = np.nanpercentile(psi, 3)
+                hi = np.nanpercentile(psi, 97)
+                plot_data = psi
             levels = np.linspace(lo, hi, n_levels + 2)[1:-1]
-            ax.contour(XX, YY, psi, levels=levels,
+            ax.contour(XX, YY, plot_data, levels=levels,
                        colors=color, linewidths=0.8, zorder=3)
         ax.set_aspect("equal"); ax.axis("off")
         ax.set_title(title, fontsize=10, fontweight="bold")

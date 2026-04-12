@@ -58,7 +58,7 @@ def get_urban_polygon(
     ----------
     boulder_polygon_utm : outer Boulder boundary in UTM (EPSG:26913).
     method              : "osmnx" (download from OSM) or "fallback".
-    n_vertices          : target vertex count after simplification (6–10).
+    n_vertices          : target vertex count after simplification (6-10).
     margin_fraction     : shrink from outer boundary by this fraction of
                           the outer polygon's linear scale, to keep inner
                           polygon strictly inside.
@@ -119,7 +119,7 @@ def _get_from_osmnx(
         ])
         poly_wgs84 = Polygon(coords_wgs84)
 
-        # Use only the high-density commercial/retail core — NOT residential,
+        # Use only the high-density commercial/retail core - NOT residential,
         # which spans most of the city and produces an overly large polygon.
         logger.info("Querying OSM for commercial/retail core polygons …")
         tags = {"landuse": ["commercial", "retail", "institutional"]}
@@ -127,7 +127,7 @@ def _get_from_osmnx(
 
         polys = gdf[gdf.geometry.geom_type.isin(["Polygon", "MultiPolygon"])]
         if len(polys) == 0:
-            logger.warning("OSM returned no commercial/retail polygons — trying broader tags")
+            logger.warning("OSM returned no commercial/retail polygons - trying broader tags")
             tags2 = {"landuse": ["commercial", "retail", "industrial", "institutional"]}
             gdf2 = ox.features_from_polygon(poly_wgs84, tags=tags2)
             polys = gdf2[gdf2.geometry.geom_type.isin(["Polygon", "MultiPolygon"])]
@@ -146,10 +146,10 @@ def _get_from_osmnx(
         return union if isinstance(union, Polygon) else None
 
     except ImportError:
-        logger.warning("osmnx not installed — falling back to hardcoded polygon")
+        logger.warning("osmnx not installed - falling back to hardcoded polygon")
         return None
     except Exception as exc:
-        logger.warning("OSM download failed (%s) — falling back", exc)
+        logger.warning("OSM download failed (%s) - falling back", exc)
         return None
 
 
@@ -178,7 +178,7 @@ def _clip_inside(
 
 
 def _simplify_to_n(poly: Polygon, n_target: int) -> Polygon:
-    """Douglas–Peucker simplification via binary search to hit n_target vertices."""
+    """Douglas-Peucker simplification via binary search to hit n_target vertices."""
     # Work with convex hull for a clean simple polygon
     hull = poly.convex_hull
     if not isinstance(hull, Polygon):

@@ -18,14 +18,26 @@ build/
 .vscode/
 .idea/
 
-# OS
-Thumbs.db
+# OS - macOS
 .DS_Store
+Thumbs.db
+._*
 
-# (shapefiles and figures are tracked)
+# Claude Code config (local session state, not for repo)
+.claude/
 
-# Misc
+# LaTeX build artifacts
+*.aux
+*.bbl
+*.blg
+*.out
 *.log
+*.toc
+*.lof
+*.lot
+*.fls
+*.fdb_latexmk
+*.synctex.gz
 
 # Elevation API cache (regenerable)
 cache/
@@ -40,3 +52,7 @@ cache/
 APPM4360_Abstract_Submission.docx
 APPM4360_Team_Guide.docx
 APPM4360_Team_Guide.pdf
+
+# Stale generated figures (not referenced in report)
+figures/fig8_urban_vs_uniform.*
+figures/fig10_four_way_comparison.*
