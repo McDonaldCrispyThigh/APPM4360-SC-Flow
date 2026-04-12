@@ -10,7 +10,7 @@ University of Colorado Boulder, Department of Applied Mathematics
 
 This project applies the **Schwarz-Christoffel (SC) conformal mapping** to simulate
 steady, irrotational, incompressible fluid flow inside the Boulder, Colorado city
-boundary polygon. Three progressively richer physical models are implemented:
+boundary polygon. Four progressively richer physical models are implemented:
 
 | Model | Potential $W(\zeta)$ | Physical meaning |
 |-------|----------------------|-----------------|
@@ -116,9 +116,9 @@ python main.py --demo
 
 ![Boulder boundary original vs simplified](figures/fig1_polygon_comparison.png)
 
-1935-vertex TIGER/Line boundary (left) vs. the Douglas-Peucker simplification before
-angle smoothing (right). Vertices with interior angle outside $[0.15\pi,\, 1.85\pi]$
-are removed to prevent SC crowding, leaving a polygon with $\geq 10$ vertices.
+1935-vertex TIGER/Line boundary (left) vs. the Douglas-Peucker simplification after
+angle smoothing (right). Vertices with interior angle outside $[0.35\pi,\, 1.75\pi]$
+are removed iteratively to prevent SC crowding, leaving an 11-vertex polygon.
 
 ### Fig 2 - Streamlines ($\psi = \text{const}$)
 
@@ -143,6 +143,57 @@ forward image of a vertical half-line $\text{Re}(\zeta) = x_0$ in $\mathbb{H}$.
 Overlay of Figs 2 and 3 (blue streamlines, red equipotentials). The two families form
 the **conformal grid** - the image of a rectangular grid in $\mathbb{H}$ under $f$.
 Orthogonality throughout the interior confirms the map is conformal.
+
+### Fig 5 - Terrain-Informed Flow
+
+![Terrain flow](figures/fig5_terrain_flow.png)
+
+Streamlines (green) and equipotentials (amber) under the terrain-corrected potential.
+USGS 3DEP elevation data (81 query points) is fitted with a thin-plate-spline RBF;
+the gradient at each polygon vertex drives a source/sink in $\mathbb{H}$. Red triangles
+mark the highest vertex (~1770 m, west side); blue triangles the lowest (~1570 m, east).
+Streamlines shift visibly toward lower elevation compared to uniform flow.
+
+### Fig 6 - Uniform vs. Terrain-Corrected (side-by-side)
+
+![Flow comparison](figures/fig6_flow_comparison.png)
+
+Direct comparison at identical contour levels. The terrain correction bends streamlines
+eastward (downhill), reproducing the slope-driven drainage pattern of Boulder's terrain.
+
+### Fig 7 - Urban Core as Interior Obstacle
+
+![Urban flow](figures/fig7_urban_flow.png)
+
+Doubly-connected flow: the downtown commercial core (OSM landuse query, 6-vertex convex
+hull, 0.13 km²) is treated as an impenetrable obstacle. Its pre-image in $\mathbb{H}$
+is a circle ($\zeta_0$, radius $a$); the Milne-Thomson circle theorem gives
+$W = U\zeta + Ua^2/(\zeta-\zeta_0) + Ua^2/(\bar\zeta-\bar\zeta_0)$.
+Streamlines visibly deflect around the purple obstacle.
+
+### Fig 8 - Three-Way Comparison
+
+![Three-way comparison](figures/fig8_three_way_comparison.png)
+
+Side-by-side: uniform flow / terrain-corrected / urban obstacle at the same contour
+levels. Each panel shows the progressive physical enrichment of the SC framework.
+
+### Fig 9 - Road-Vortex Flow
+
+![Road flow](figures/fig9_road_flow.png)
+
+Point vortices placed at the 11 highest-degree OSM road intersections (primary through
+tertiary roads) inside the polygon. Each intersection's pre-image in $\mathbb{H}$ is
+obtained via the SC inverse map. Vortices north of the centroid spin CCW (orange
+triangles), south spin CW (blue triangles), producing a shear pattern consistent with
+Boulder's prevailing westerly flow. Streamlines show local eddies at each intersection.
+
+### Fig 10 - Uniform vs. Road-Vortex (side-by-side)
+
+![Road vs uniform](figures/fig10_road_vs_uniform.png)
+
+Direct comparison: the road-vortex correction introduces organised local circulation
+absent from the uniform baseline, particularly along the Broadway and 28th St corridors.
 
 ---
 
