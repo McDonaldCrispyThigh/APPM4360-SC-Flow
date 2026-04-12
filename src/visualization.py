@@ -3,14 +3,14 @@ visualization.py
 ================
 Publication-quality figures for the SC fluid-flow project.
 
-Figure 1 — Original vs. simplified polygon (UTM coords).
-Figure 2 — Streamlines  ψ = const  (normalised coords).
-Figure 3 — Equipotential lines  φ = const  (normalised coords).
-Figure 4 — Combined overlay of streamlines + equipotentials.
-Figure 5 — Terrain-informed streamlines (when --terrain is used).
-Figure 6 — Side-by-side: uniform flow vs. terrain flow.
-Figure 7 — Urban-obstacle doubly-connected flow (when --urban is used).
-Figure 8 — Three-way comparison: uniform / terrain / urban.
+Figure 1 - Original vs. simplified polygon (UTM coords).
+Figure 2 - Streamlines  ψ = const  (normalised coords).
+Figure 3 - Equipotential lines  φ = const  (normalised coords).
+Figure 4 - Combined overlay of streamlines + equipotentials.
+Figure 5 - Terrain-informed streamlines (when --terrain is used).
+Figure 6 - Side-by-side: uniform flow vs. terrain flow.
+Figure 7 - Urban-obstacle doubly-connected flow (when --urban is used).
+Figure 8 - Three-way comparison: uniform / terrain / urban.
 """
 
 from __future__ import annotations
@@ -70,12 +70,14 @@ def plot_polygon_comparison(
         ax.set_title(title, fontsize=12)
         ax.tick_params(labelsize=8)
 
-    fig.suptitle("Boulder City Boundary — Original vs. Simplified",
+    fig.suptitle("Boulder City Boundary - Original vs. Simplified",
                  fontsize=14, fontweight="bold", y=0.98)
     plt.tight_layout(rect=[0, 0, 1, 0.95])
     if save:
         fig.savefig(FIG_DIR / filename, bbox_inches="tight")
-        logger.info("Saved %s", FIG_DIR / filename)
+        pdf_name = Path(filename).with_suffix(".pdf").name
+        fig.savefig(FIG_DIR / pdf_name, bbox_inches="tight")
+        logger.info("Saved %s + %s", FIG_DIR / filename, FIG_DIR / pdf_name)
     return fig
 
 
@@ -101,6 +103,15 @@ def _draw_urban(ax, inner_polygon: Optional[Polygon]):
             fontsize=7, color=URBAN_BOUNDARY, fontweight="bold", zorder=7)
 
 
+# ── helpers for parametric curves ─────────────────────────────────────────
+
+def _draw_curves(ax, curves, color, lw=0.9):
+    """Plot a list of (x_arr, y_arr) parametric curves."""
+    for xc, yc in curves:
+        if len(xc) > 1:
+            ax.plot(xc, yc, color=color, linewidth=lw, zorder=3)
+
+
 # ── Figure 2 ──────────────────────────────────────────────────────────────
 
 def plot_streamlines(
@@ -109,28 +120,40 @@ def plot_streamlines(
     n_levels: int = 30,
     save: bool = True,
     filename: str = "fig2_streamlines.png",
+    stream_curves=None,
 ) -> plt.Figure:
-    """Contour plot of the stream function ψ."""
+    """Streamline plot.
+
+    If *stream_curves* is provided (list of (x, y) arrays from the forward
+    SC map), they are plotted directly as parametric curves - this gives
+    artifact-free results without any grid interpolation.  Otherwise falls
+    back to a contour plot of *Psi*.
+    """
     _ensure_fig_dir()
     fig, ax = plt.subplots(figsize=(9, 9), dpi=150)
     _draw_boundary(ax, norm_polygon)
 
-    valid = np.isfinite(Psi)
-    if valid.any():
-        lo, hi = np.nanmin(Psi), np.nanmax(Psi)
-        levels = np.linspace(lo, hi, n_levels + 2)[1:-1]
-        ax.contour(XX, YY, Psi, levels=levels,
-                   colors=STREAM_COLOR, linewidths=0.9, zorder=3)
+    if stream_curves is not None:
+        _draw_curves(ax, stream_curves, STREAM_COLOR, lw=0.9)
     else:
-        logger.warning("No valid ψ data for streamlines.")
+        valid = np.isfinite(Psi)
+        if valid.any():
+            lo, hi = np.nanmin(Psi), np.nanmax(Psi)
+            levels = np.linspace(lo, hi, n_levels + 2)[1:-1]
+            ax.contour(XX, YY, Psi, levels=levels,
+                       colors=STREAM_COLOR, linewidths=0.9, zorder=3)
+        else:
+            logger.warning("No valid ψ data for streamlines.")
 
     ax.set_aspect("equal"); ax.axis("off")
-    ax.set_title("Streamlines (ψ = const) — Boulder Polygon",
+    ax.set_title("Streamlines (ψ = const) - Boulder Polygon",
                  fontsize=14, fontweight="bold")
     plt.tight_layout()
     if save:
         fig.savefig(FIG_DIR / filename, bbox_inches="tight")
-        logger.info("Saved %s", FIG_DIR / filename)
+        pdf_name = Path(filename).with_suffix(".pdf").name
+        fig.savefig(FIG_DIR / pdf_name, bbox_inches="tight")
+        logger.info("Saved %s + %s", FIG_DIR / filename, FIG_DIR / pdf_name)
     return fig
 
 
@@ -142,28 +165,38 @@ def plot_equipotentials(
     n_levels: int = 30,
     save: bool = True,
     filename: str = "fig3_equipotentials.png",
+    equip_curves=None,
 ) -> plt.Figure:
-    """Contour plot of the velocity potential φ."""
+    """Equipotential line plot.
+
+    Accepts optional *equip_curves* (forward-map parametric curves) for
+    artifact-free rendering; falls back to contour plot otherwise.
+    """
     _ensure_fig_dir()
     fig, ax = plt.subplots(figsize=(9, 9), dpi=150)
     _draw_boundary(ax, norm_polygon)
 
-    valid = np.isfinite(Phi)
-    if valid.any():
-        lo, hi = np.nanmin(Phi), np.nanmax(Phi)
-        levels = np.linspace(lo, hi, n_levels + 2)[1:-1]
-        ax.contour(XX, YY, Phi, levels=levels,
-                   colors=EQUIP_COLOR, linewidths=0.9, zorder=3)
+    if equip_curves is not None:
+        _draw_curves(ax, equip_curves, EQUIP_COLOR, lw=0.9)
     else:
-        logger.warning("No valid φ data for equipotentials.")
+        valid = np.isfinite(Phi)
+        if valid.any():
+            lo, hi = np.nanmin(Phi), np.nanmax(Phi)
+            levels = np.linspace(lo, hi, n_levels + 2)[1:-1]
+            ax.contour(XX, YY, Phi, levels=levels,
+                       colors=EQUIP_COLOR, linewidths=0.9, zorder=3)
+        else:
+            logger.warning("No valid φ data for equipotentials.")
 
     ax.set_aspect("equal"); ax.axis("off")
-    ax.set_title("Equipotential Lines (φ = const) — Boulder Polygon",
+    ax.set_title("Equipotential Lines (φ = const) - Boulder Polygon",
                  fontsize=14, fontweight="bold")
     plt.tight_layout()
     if save:
         fig.savefig(FIG_DIR / filename, bbox_inches="tight")
-        logger.info("Saved %s", FIG_DIR / filename)
+        pdf_name = Path(filename).with_suffix(".pdf").name
+        fig.savefig(FIG_DIR / pdf_name, bbox_inches="tight")
+        logger.info("Saved %s + %s", FIG_DIR / filename, FIG_DIR / pdf_name)
     return fig
 
 
@@ -175,27 +208,43 @@ def plot_combined(
     n_levels: int = 25,
     save: bool = True,
     filename: str = "fig4_combined.png",
+    stream_curves=None,
+    equip_curves=None,
 ) -> plt.Figure:
     """Overlay streamlines (blue) + equipotentials (red)."""
     _ensure_fig_dir()
     fig, ax = plt.subplots(figsize=(10, 10), dpi=150)
     _draw_boundary(ax, norm_polygon)
 
-    for data, color in [(Psi, STREAM_COLOR), (Phi, EQUIP_COLOR)]:
-        valid = np.isfinite(data)
+    if stream_curves is not None:
+        _draw_curves(ax, stream_curves, STREAM_COLOR, lw=0.7)
+    else:
+        valid = np.isfinite(Psi)
         if valid.any():
-            lo, hi = np.nanmin(data), np.nanmax(data)
+            lo, hi = np.nanmin(Psi), np.nanmax(Psi)
             levels = np.linspace(lo, hi, n_levels + 2)[1:-1]
-            ax.contour(XX, YY, data, levels=levels,
-                       colors=color, linewidths=0.7, zorder=3)
+            ax.contour(XX, YY, Psi, levels=levels,
+                       colors=STREAM_COLOR, linewidths=0.7, zorder=3)
+
+    if equip_curves is not None:
+        _draw_curves(ax, equip_curves, EQUIP_COLOR, lw=0.7)
+    else:
+        valid = np.isfinite(Phi)
+        if valid.any():
+            lo, hi = np.nanmin(Phi), np.nanmax(Phi)
+            levels = np.linspace(lo, hi, n_levels + 2)[1:-1]
+            ax.contour(XX, YY, Phi, levels=levels,
+                       colors=EQUIP_COLOR, linewidths=0.7, zorder=3)
 
     ax.set_aspect("equal"); ax.axis("off")
-    ax.set_title("Streamlines & Equipotentials — Boulder Polygon",
+    ax.set_title("Streamlines & Equipotentials - Boulder Polygon",
                  fontsize=14, fontweight="bold")
     plt.tight_layout()
     if save:
         fig.savefig(FIG_DIR / filename, bbox_inches="tight")
-        logger.info("Saved %s", FIG_DIR / filename)
+        pdf_name = Path(filename).with_suffix(".pdf").name
+        fig.savefig(FIG_DIR / pdf_name, bbox_inches="tight")
+        logger.info("Saved %s + %s", FIG_DIR / filename, FIG_DIR / pdf_name)
     return fig
 
 
@@ -261,34 +310,48 @@ def plot_terrain_combined(
                     fontsize=9, color="#333333")
 
     ax.set_aspect("equal"); ax.axis("off")
-    ax.set_title("Terrain-Informed Flow — Boulder Polygon",
+    ax.set_title("Terrain-Informed Flow - Boulder Polygon",
                  fontsize=14, fontweight="bold")
     plt.tight_layout()
     if save:
         fig.savefig(FIG_DIR / filename, bbox_inches="tight")
-        logger.info("Saved %s", FIG_DIR / filename)
+        pdf_name = Path(filename).with_suffix(".pdf").name
+        fig.savefig(FIG_DIR / pdf_name, bbox_inches="tight")
+        logger.info("Saved %s + %s", FIG_DIR / filename, FIG_DIR / pdf_name)
     return fig
 
 
 def plot_flow_comparison(
     XX, YY,
-    Psi_uniform, Phi_uniform,
-    Psi_terrain, Phi_terrain,
+    Psi_left, Phi_left,
+    Psi_right, Phi_right,
     norm_polygon: Polygon,
     n_levels: int = 22,
     save: bool = True,
     filename: str = "fig6_flow_comparison.png",
+    title_left: str = r"Uniform Flow  $W = U\zeta$",
+    title_right: str = r"Terrain-Informed Flow  $W = U\zeta + $ sources",
+    suptitle: str = "Flow Comparison - Uniform vs. Terrain-Informed",
+    stream_color_right: str = TERRAIN_STREAM,
+    equip_color_right: str = TERRAIN_EQUIP,
 ) -> plt.Figure:
-    """Side-by-side: uniform flow vs. terrain-informed flow."""
+    """Side-by-side flow comparison.
+
+    Parameters
+    ----------
+    title_left / title_right : panel titles (override for non-terrain comparisons).
+    suptitle                 : figure-level title.
+    stream_color_right       : streamline colour for the right panel.
+    equip_color_right        : equipotential colour for the right panel.
+    """
     _ensure_fig_dir()
     fig, axes = plt.subplots(1, 2, figsize=(18, 8), dpi=150)
 
-    titles = [r"Uniform Flow  $W = U\zeta$",
-              r"Terrain-Informed Flow  $W = U\zeta + $ sources"]
-    psi_list = [Psi_uniform, Psi_terrain]
-    phi_list = [Phi_uniform, Phi_terrain]
-    stream_colors = [STREAM_COLOR, TERRAIN_STREAM]
-    equip_colors  = [EQUIP_COLOR,  TERRAIN_EQUIP]
+    titles = [title_left, title_right]
+    psi_list = [Psi_left, Psi_right]
+    phi_list = [Phi_left, Phi_right]
+    stream_colors = [STREAM_COLOR, stream_color_right]
+    equip_colors  = [EQUIP_COLOR,  equip_color_right]
 
     for ax, psi, phi, sc, ec, title in zip(
         axes, psi_list, phi_list, stream_colors, equip_colors, titles,
@@ -304,12 +367,14 @@ def plot_flow_comparison(
         ax.set_aspect("equal"); ax.axis("off")
         ax.set_title(title, fontsize=13, fontweight="bold")
 
-    fig.suptitle("Flow Comparison — Uniform vs. Terrain-Informed",
+    fig.suptitle(suptitle,
                  fontsize=15, fontweight="bold", y=0.98)
     plt.tight_layout(rect=[0, 0, 1, 0.94])
     if save:
         fig.savefig(FIG_DIR / filename, bbox_inches="tight")
-        logger.info("Saved %s", FIG_DIR / filename)
+        pdf_name = Path(filename).with_suffix(".pdf").name
+        fig.savefig(FIG_DIR / pdf_name, bbox_inches="tight")
+        logger.info("Saved %s + %s", FIG_DIR / filename, FIG_DIR / pdf_name)
     return fig
 
 
@@ -367,14 +432,16 @@ def plot_urban_flow(
 
     ax.set_aspect("equal"); ax.axis("off")
     ax.set_title(
-        "Doubly-Connected Flow — Urban Core as Interior Obstacle\n"
+        "Doubly-Connected Flow - Urban Core as Interior Obstacle\n"
         r"$W(\zeta) = U\zeta + Ua^2/(\zeta-\zeta_0) + Ua^2/(\zeta-\bar\zeta_0)$",
         fontsize=12, fontweight="bold",
     )
     plt.tight_layout()
     if save:
         fig.savefig(FIG_DIR / filename, bbox_inches="tight")
-        logger.info("Saved %s", FIG_DIR / filename)
+        pdf_name = Path(filename).with_suffix(".pdf").name
+        fig.savefig(FIG_DIR / pdf_name, bbox_inches="tight")
+        logger.info("Saved %s + %s", FIG_DIR / filename, FIG_DIR / pdf_name)
     return fig
 
 
@@ -419,12 +486,14 @@ def plot_three_way_comparison(
         ax.set_title(title, fontsize=11, fontweight="bold")
 
     fig.suptitle(
-        "Streamline Comparison — Boulder City Polygon\n"
-        "Schwarz–Christoffel Conformal Mapping with Progressive Physical Enhancements",
+        "Streamline Comparison - Boulder City Polygon\n"
+        "Schwarz-Christoffel Conformal Mapping with Progressive Physical Enhancements",
         fontsize=13, fontweight="bold", y=1.01,
     )
     plt.tight_layout()
     if save:
         fig.savefig(FIG_DIR / filename, bbox_inches="tight")
-        logger.info("Saved %s", FIG_DIR / filename)
+        pdf_name = Path(filename).with_suffix(".pdf").name
+        fig.savefig(FIG_DIR / pdf_name, bbox_inches="tight")
+        logger.info("Saved %s + %s", FIG_DIR / filename, FIG_DIR / pdf_name)
     return fig

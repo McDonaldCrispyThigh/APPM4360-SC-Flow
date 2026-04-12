@@ -1,7 +1,7 @@
 """
 sc_solver.py
 ============
-Schwarz–Christoffel parameter problem solver and forward-map evaluator.
+Schwarz-Christoffel parameter problem solver and forward-map evaluator.
 
     f(ζ) = A + C ∫₀^ζ  ∏ₖ (t − ζₖ)^(αₖ − 1)  dt
 
@@ -57,12 +57,12 @@ def _sc_prod_complex(t: np.ndarray, zk: np.ndarray, betas: np.ndarray) -> np.nda
     return np.prod(np.exp(betas[None, :] * np.log(diffs)), axis=1)
 
 
-# ── Gauss–Legendre integration (vectorised) ──────────────────────────────
+# ── Gauss-Legendre integration (vectorised) ──────────────────────────────
 
 _GL_CACHE: dict[int, tuple] = {}
 
 def _gl_nodes(n_pts: int):
-    """Cached Gauss–Legendre nodes and weights."""
+    """Cached Gauss-Legendre nodes and weights."""
     if n_pts not in _GL_CACHE:
         _GL_CACHE[n_pts] = np.polynomial.legendre.leggauss(n_pts)
     return _GL_CACHE[n_pts]
@@ -101,7 +101,7 @@ def _side_length(zk_a: float, zk_b: float,
 
 
 def _all_side_lengths(zk: np.ndarray, betas: np.ndarray,
-                      R: float = 40.0) -> np.ndarray:
+                      R: float = 500.0) -> np.ndarray:
     """Compute side lengths for all n sides including the infinite one."""
     n = len(zk)
     lengths = np.empty(n)
@@ -143,21 +143,38 @@ def solve_parameters(
     if n_free == 0:
         zk = np.array([-1.0, 0.0, 1.0])
     else:
-        # Initial guess: equally spaced in (0, 1)
-        x0 = np.linspace(0.05, 0.95, n_free + 2)[1:-1]
+        # Softmax parameterisation: p ∈ ℝⁿ_free (unconstrained).
+        # Maps to n_free strictly-ordered values in (0, 1) via:
+        #   w = [exp(p₀), …, exp(p_{m-1}), 1]   (m+1 weights, last fixed)
+        #   gaps = w / sum(w)                     (sum to 1, all positive)
+        #   ζ_free[i] = cumsum(gaps)[i]           (strictly increasing in (0,1))
+        # Initial p=0 → equal spacing: ζ_free = [1/(m+1), …, m/(m+1)].
+        # This gives a smooth, everywhere-differentiable residual (no sort).
 
-        def _residuals(params):
-            zk = np.empty(n)
+        def _softmax_to_zk_free(p: np.ndarray) -> np.ndarray:
+            w = np.append(np.exp(p - p.max()), 1.0)   # numerically stable
+            w /= w.sum()
+            return np.cumsum(w[:n_free])               # n_free values in (0, 1)
+
+        # Side-length-proportional init to reduce crowding.
+        # The n_free+1 softmax weights correspond to polygon sides 1..n-2.
+        init_sides = target_sides[1:n - 1]          # shape (n_free + 1,)
+        ratios = np.maximum(init_sides[:-1] / init_sides[-1], 1e-6)
+        x0 = np.log(ratios)     # last weight fixed at 1 (log=0)
+
+        def _residuals(p):
+            zk_arr = np.empty(n)
             for idx, val in fixed_vals.items():
-                zk[idx] = val
+                zk_arr[idx] = val
+            zk_free = _softmax_to_zk_free(p)
             for k, idx in enumerate(free_idx):
-                zk[idx] = params[k]
-            zk_sorted = np.sort(zk)
-            sl = _all_side_lengths(zk_sorted, betas)
+                zk_arr[idx] = zk_free[k]
+            sl = _all_side_lengths(zk_arr, betas)
             ratios = sl[:-1] / sl[-1]
             return ratios - target_ratios
 
         logger.info("Solving SC parameters (n=%d, free=%d) …", n, n_free)
+        # p is unconstrained; use Levenberg-Marquardt for fastest convergence.
         result = optimize.least_squares(
             _residuals, x0,
             method="lm",
@@ -172,8 +189,9 @@ def solve_parameters(
         zk = np.empty(n)
         for idx, val in fixed_vals.items():
             zk[idx] = val
+        zk_free = _softmax_to_zk_free(result.x)
         for k, idx in enumerate(free_idx):
-            zk[idx] = result.x[k]
+            zk[idx] = zk_free[k]
 
     zk = np.sort(zk)
 
@@ -192,7 +210,7 @@ def _solve_AC(zk, betas, z_poly):
     Uses the first two mapped vertices to fix C and A.
     Integration stays slightly above the real axis to avoid singularities.
     """
-    delta = 0.01j  # tiny lift into ℍ
+    delta = 0.1j   # lift into ℍ, large enough to clear near-vertex regions
 
     # Integrate along a path slightly above the real axis: zk[0]+δ → zk[1]+δ
     I01 = integrate_complex(zk[0] + delta, zk[1] + delta, zk, betas)
@@ -218,7 +236,8 @@ _F_REF_CACHE: dict[int, complex] = {}   # keyed by id(params)
 
 def _f_at_ref(params: SCParameters, n_pts: int = 500) -> complex:
     """Evaluate the SC integral at the reference point _ZETA_REF."""
-    key = id(params)
+    # Key on array contents, not object identity (id() is unstable after GC)
+    key = (params.zk.tobytes(), params.betas.tobytes())
     if key not in _F_REF_CACHE:
         zk, betas = params.zk, params.betas
         # Path: zk[0] → zk[0]+iδ → _ZETA_REF   (stays in ℍ)

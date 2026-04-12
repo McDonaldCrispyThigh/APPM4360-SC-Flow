@@ -19,11 +19,12 @@ from typing import Callable, Optional, Tuple
 
 import numpy as np
 from scipy import optimize
+from scipy.interpolate import griddata
 from shapely.geometry import Point, Polygon
 from shapely.prepared import prep
 from tqdm import tqdm
 
-from .sc_solver import SCParameters, sc_map_single
+from .sc_solver import SCParameters, sc_map, sc_map_single
 from typing import TYPE_CHECKING
 if TYPE_CHECKING:
     from .sc_solver_dc import UrbanObstacle
@@ -32,6 +33,107 @@ logger = logging.getLogger(__name__)
 
 # Type alias for a potential function:  ζ → W(ζ)
 PotentialFn = Callable[[complex], complex]
+
+
+# ── Parametric streamline / equipotential curves (forward-map, no inverse) ──
+
+def compute_curves_forward(
+    params: SCParameters,
+    norm_polygon: Polygon,
+    n_stream: int = 25,
+    n_equip: int = 25,
+    n_pts_per_curve: int = 300,
+    potential_fn: Optional[PotentialFn] = None,
+    U: float = 1.0,
+) -> Tuple[list, list]:
+    """Compute streamline and equipotential curves via the forward SC map.
+
+    For uniform flow W(ζ) = Uζ:
+      - streamlines   are Im(ζ) = const  (horizontal lines in ℍ)
+      - equipotentials are Re(ζ) = const  (vertical half-lines in ℍ)
+
+    Each curve is mapped forward z = f(ζ) and clipped to *norm_polygon*.
+
+    Returns
+    -------
+    stream_curves : list of (x_arr, y_arr) arrays - one per streamline
+    equip_curves  : list of (x_arr, y_arr) arrays - one per equipotential
+    """
+    from shapely.geometry import LineString
+
+    if potential_fn is None:
+        from .terrain import uniform_potential
+        potential_fn = lambda zeta: uniform_potential(zeta, U)
+
+    prep_poly = prep(norm_polygon)
+    # Wide t range: the "infinite" side of the polygon maps to large |t|.
+    # Use denser sampling near the origin and sparser at the extremes.
+    t_inner = np.linspace(-4.0, 4.0, n_pts_per_curve * 3 // 4)
+    t_outer = np.concatenate([np.linspace(-20.0, -4.0, n_pts_per_curve // 8),
+                               np.linspace(4.0,  20.0, n_pts_per_curve // 8)])
+    t_vals = np.unique(np.concatenate([t_outer, t_inner]))
+
+    # ── Streamlines: Im(ζ) = y₀ for uniform flow ─────────────────────────
+    # y₀ range: small y → near boundary; large y → interior / "far" regions.
+    # Use log-spacing so we capture near-boundary detail well.
+    # Combine near-boundary and far-field levels.
+    # Don't go below y=0.04 - very small y gives too-dense boundary lines.
+    y_near = np.logspace(-1.4, -0.5, n_stream // 2)   # 0.04 … 0.32
+    y_far  = np.logspace(-0.4,  0.8, n_stream - n_stream // 2)  # 0.40 … 6.3
+    y_levels = np.unique(np.concatenate([y_near, y_far]))
+
+    stream_curves = []
+    logger.info("Computing %d forward-map streamlines …", n_stream)
+    for y0 in y_levels:
+        zeta_curve = t_vals + 1j * y0
+        z_curve = sc_map(zeta_curve, params, n_pts=200)
+        x_c, y_c = z_curve.real, z_curve.imag
+        # Clip by polygon: keep segments where both endpoints are inside
+        xs, ys = [], []
+        for k in range(len(x_c) - 1):
+            p0 = (x_c[k],   y_c[k])
+            p1 = (x_c[k+1], y_c[k+1])
+            if prep_poly.contains(Point(p0)) or prep_poly.contains(Point(p1)):
+                if not xs:
+                    xs.append(x_c[k]); ys.append(y_c[k])
+                xs.append(x_c[k+1]); ys.append(y_c[k+1])
+            else:
+                if xs:
+                    stream_curves.append((np.array(xs), np.array(ys)))
+                    xs, ys = [], []
+        if xs:
+            stream_curves.append((np.array(xs), np.array(ys)))
+
+    # ── Equipotentials: Re(ζ) = x₀ for uniform flow ──────────────────────
+    # x₀ spans the range of pre-vertices plus some margin.
+    zk = params.zk
+    x0_levels = np.linspace(zk[0] * 1.3, zk[-1] * 1.3, n_equip)
+    y_vals = np.logspace(-1.5, 0.8, n_pts_per_curve)
+
+    equip_curves = []
+    logger.info("Computing %d forward-map equipotentials …", n_equip)
+    for x0 in x0_levels:
+        zeta_curve = x0 + 1j * y_vals
+        z_curve = sc_map(zeta_curve, params, n_pts=200)
+        x_c, y_c = z_curve.real, z_curve.imag
+        xs, ys = [], []
+        for k in range(len(x_c) - 1):
+            p0 = (x_c[k],   y_c[k])
+            p1 = (x_c[k+1], y_c[k+1])
+            if prep_poly.contains(Point(p0)) or prep_poly.contains(Point(p1)):
+                if not xs:
+                    xs.append(x_c[k]); ys.append(y_c[k])
+                xs.append(x_c[k+1]); ys.append(y_c[k+1])
+            else:
+                if xs:
+                    equip_curves.append((np.array(xs), np.array(ys)))
+                    xs, ys = [], []
+        if xs:
+            equip_curves.append((np.array(xs), np.array(ys)))
+
+    logger.info("Parametric curves: %d streamlines, %d equipotentials",
+                len(stream_curves), len(equip_curves))
+    return stream_curves, equip_curves
 
 
 def sc_inverse_single(
@@ -69,7 +171,7 @@ def sc_inverse_single(
         )
         if ier == 1:
             zeta = sol[0] + 1j * sol[1]
-            if zeta.imag > -1e-10:
+            if zeta.imag > 1e-10:   # strictly inside ℍ
                 return zeta
     return None
 
@@ -81,90 +183,96 @@ def compute_flow_grid(
     U: float = 1.0,
     potential_fn: Optional[PotentialFn] = None,
     zeta_cache: Optional[np.ndarray] = None,
+    n_zeta: int = 120,
 ) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
     """Compute ψ and φ on a grid over *norm_polygon* (normalised coords).
 
+    Uses a **forward-map** approach to avoid the unreliable inverse Newton
+    solver.  A dense grid of ζ values in the upper half-plane is mapped
+    forward to z-space via f(ζ), potentials are evaluated at those scattered
+    points, and the result is interpolated to the regular output grid.
+
     Parameters
     ----------
-    norm_polygon : Shapely polygon in the **normalised** coordinate system
-        (centred at 0, max vertex modulus ≈ 1).
-    params : solved SC parameters.
-    n_grid : grid resolution per axis.
-    U : free-stream speed.
-    potential_fn : callable ``ζ → W(ζ)``.  If None, uses the uniform
-        potential ``W(ζ) = U·ζ``.
-    zeta_cache : optional pre-computed ζ grid (from a previous call).
-        If provided, the expensive inverse-map step is skipped entirely.
+    norm_polygon : Shapely polygon in the **normalised** coordinate system.
+    params       : solved SC parameters.
+    n_grid       : output grid resolution per axis.
+    U            : free-stream speed.
+    potential_fn : callable ``ζ → W(ζ)``.  Defaults to ``W = Uζ``.
+    zeta_cache   : unused (kept for API compatibility).
+    n_zeta       : resolution of the ζ sampling grid per axis.
 
     Returns
     -------
-    XX, YY, Psi, Phi, Zeta — all shape ``(n_grid, n_grid)``.
+    XX, YY, Psi, Phi, Zeta - all shape ``(n_grid, n_grid)``.
     Psi, Phi, and Zeta are NaN outside the polygon.
     """
     if potential_fn is None:
         from .terrain import uniform_potential
         potential_fn = lambda zeta: uniform_potential(zeta, U)
 
-    bounds = norm_polygon.bounds  # (minx, miny, maxx, maxy)
-    pad = 0.05 * max(bounds[2] - bounds[0], bounds[3] - bounds[1])
-    xv = np.linspace(bounds[0] + pad, bounds[2] - pad, n_grid)
-    yv = np.linspace(bounds[1] + pad, bounds[3] - pad, n_grid)
+    # ── 1. Sample ζ in upper half-plane and map forward ──────────────────
+    # Use a grid that concentrates near the real axis (where the polygon
+    # boundary maps to) and fans out.  Log-spaced y captures both near-
+    # boundary detail and far-field behaviour.
+    x_zeta = np.linspace(-1.8, 1.8, n_zeta)
+    y_zeta = np.logspace(-1.5, 0.7, n_zeta // 2)   # ~0.03 … 5
+    X_zeta, Y_zeta = np.meshgrid(x_zeta, y_zeta)
+    zeta_flat = (X_zeta + 1j * Y_zeta).ravel()
+
+    logger.info("Forward SC map: evaluating %d ζ points …", len(zeta_flat))
+    z_flat = sc_map(zeta_flat, params, n_pts=250)
+
+    # Evaluate potential at each ζ point
+    W_flat = np.array([potential_fn(z) for z in zeta_flat], dtype=complex)
+    Psi_flat = W_flat.imag
+    Phi_flat = W_flat.real
+
+    # ── 2. Build regular z-space output grid ─────────────────────────────
+    bounds = norm_polygon.bounds
+    pad = 0.04 * max(bounds[2] - bounds[0], bounds[3] - bounds[1])
+    xv = np.linspace(bounds[0] - pad, bounds[2] + pad, n_grid)
+    yv = np.linspace(bounds[1] - pad, bounds[3] + pad, n_grid)
     XX, YY = np.meshgrid(xv, yv)
 
-    Psi = np.full(XX.shape, np.nan)
-    Phi = np.full(XX.shape, np.nan)
-    Zeta = np.full(XX.shape, np.nan, dtype=complex)
+    # ── 3. Scattered interpolation to regular grid ────────────────────────
+    # Only use z points that landed inside or near the polygon bounding box
+    bx0, by0, bx1, by1 = bounds
+    margin = 0.3
+    in_box = (
+        (z_flat.real > bx0 - margin) & (z_flat.real < bx1 + margin) &
+        (z_flat.imag > by0 - margin) & (z_flat.imag < by1 + margin)
+    )
+    pts  = np.column_stack([z_flat[in_box].real, z_flat[in_box].imag])
+    n_pts = pts.shape[0]
+    logger.info("Interpolating from %d scattered z-points …", n_pts)
 
-    # ── Fast path: re-use a cached ζ grid from a previous run ──
-    if zeta_cache is not None:
-        logger.info("Using cached ζ grid (%d valid points)",
-                     int(np.isfinite(zeta_cache).sum()))
-        Zeta = zeta_cache.copy()
-        valid_mask = np.isfinite(zeta_cache)
-        for i in range(n_grid):
-            for j in range(n_grid):
-                if valid_mask[i, j]:
-                    W = potential_fn(Zeta[i, j])
-                    Psi[i, j] = W.imag
-                    Phi[i, j] = W.real
-        n_solved = np.isfinite(Psi).sum()
-        logger.info("Evaluated potential at %d cached points", n_solved)
+    if n_pts < 10:
+        logger.error("Too few forward-mapped points inside bounding box!")
+        Psi = np.full(XX.shape, np.nan)
+        Phi = np.full(XX.shape, np.nan)
+        Zeta = np.full(XX.shape, np.nan, dtype=complex)
         return XX, YY, Psi, Phi, Zeta
 
-    # Fast interior mask using prepared geometry
+    Psi = griddata(pts, Psi_flat[in_box], (XX, YY), method="linear")
+    Phi = griddata(pts, Phi_flat[in_box], (XX, YY), method="linear")
+    # Zeta: store Re and Im separately then reassemble
+    zr  = griddata(pts, zeta_flat[in_box].real, (XX, YY), method="linear")
+    zi  = griddata(pts, zeta_flat[in_box].imag, (XX, YY), method="linear")
+    Zeta = zr + 1j * zi
+
+    # ── 4. Mask points outside the polygon ───────────────────────────────
     logger.info("Building interior mask (%d × %d) …", n_grid, n_grid)
     prep_poly = prep(norm_polygon)
-    mask = np.zeros(XX.shape, dtype=bool)
     for i in range(n_grid):
         for j in range(n_grid):
-            if prep_poly.contains(Point(XX[i, j], YY[i, j])):
-                mask[i, j] = True
-    n_inside = mask.sum()
-    logger.info("Interior points: %d / %d", n_inside, n_grid * n_grid)
+            if not prep_poly.contains(Point(XX[i, j], YY[i, j])):
+                Psi[i, j]  = np.nan
+                Phi[i, j]  = np.nan
+                Zeta[i, j] = np.nan
 
-    if n_inside == 0:
-        logger.error("No interior points — check polygon/grid coordinates!")
-        return XX, YY, Psi, Phi, Zeta
-
-    # Solve inverse map, scanning row-by-row for coherent warm-starts
-    logger.info("Inverting SC map for %d interior points …", n_inside)
-    zeta_prev = 0.0 + 0.5j
-
-    interior_indices = np.argwhere(mask)
-    for idx in tqdm(interior_indices, desc="Inverse SC map"):
-        i, j = idx
-        z_target = XX[i, j] + 1j * YY[i, j]
-        zeta = sc_inverse_single(z_target, params, zeta0=zeta_prev)
-        if zeta is not None:
-            Zeta[i, j] = zeta
-            W = potential_fn(zeta)
-            Psi[i, j] = W.imag
-            Phi[i, j] = W.real
-            zeta_prev = zeta
-
-    n_solved = np.isfinite(Psi).sum()
-    logger.info("Inverted %d / %d interior points", n_solved, n_inside)
-
+    n_valid = int(np.isfinite(Psi).sum())
+    logger.info("Flow grid: %d valid interior points", n_valid)
     return XX, YY, Psi, Phi, Zeta
 
 
@@ -176,13 +284,13 @@ def compute_flow_grid_urban(
     n_grid: int = 80,
     U: float = 1.0,
     terrain_sources=None,
+    n_zeta: int = 120,
 ) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
     """Compute ψ and φ for the doubly-connected domain Ω_outer \\ Ω_inner.
 
-    The urban core (Ω_inner) is treated as a solid obstacle: grid points
-    inside it are masked to NaN.  The complex potential uses the circle-
-    theorem correction from sc_solver_dc.py to enforce approximate
-    no-penetration on the obstacle boundary.
+    Uses the same forward-map + interpolation strategy as compute_flow_grid.
+    Points inside the inner polygon (urban core) are masked out after
+    interpolation.
 
     Parameters
     ----------
@@ -193,15 +301,15 @@ def compute_flow_grid_urban(
     n_grid             : grid resolution per axis.
     U                  : free-stream speed.
     terrain_sources    : optional list of (ζ, Q) terrain source/sink pairs.
+    n_zeta             : ζ sampling grid resolution per axis.
 
     Returns
     -------
-    XX, YY, Psi, Phi, Zeta — all shape (n_grid, n_grid).
+    XX, YY, Psi, Phi, Zeta - all shape (n_grid, n_grid).
     Points outside outer polygon or inside inner polygon are NaN.
     """
     from .sc_solver_dc import urban_potential, urban_terrain_potential
 
-    # Build potential function
     if terrain_sources:
         potential_fn = lambda zeta: urban_terrain_potential(
             zeta, U, obstacle, terrain_sources
@@ -209,61 +317,60 @@ def compute_flow_grid_urban(
     else:
         potential_fn = lambda zeta: urban_potential(zeta, U, obstacle)
 
+    # ── Forward map: sample ζ, skip points inside obstacle circle ────────
+    x_zeta = np.linspace(-1.8, 1.8, n_zeta)
+    y_zeta = np.logspace(-1.5, 0.7, n_zeta // 2)
+    X_zeta, Y_zeta = np.meshgrid(x_zeta, y_zeta)
+    zeta_flat = (X_zeta + 1j * Y_zeta).ravel()
+
+    # Mask out ζ inside the obstacle circle (no-penetration region)
+    not_in_obstacle = np.abs(zeta_flat - obstacle.zeta0) >= obstacle.radius
+    zeta_flat = zeta_flat[not_in_obstacle]
+
+    logger.info("Urban forward SC map: evaluating %d ζ points …", len(zeta_flat))
+    z_flat = sc_map(zeta_flat, params, n_pts=250)
+
+    W_flat  = np.array([potential_fn(z) for z in zeta_flat], dtype=complex)
+    Psi_flat = W_flat.imag
+    Phi_flat = W_flat.real
+
+    # ── Build output grid ────────────────────────────────────────────────
     bounds = norm_polygon_outer.bounds
-    pad = 0.05 * max(bounds[2] - bounds[0], bounds[3] - bounds[1])
-    xv = np.linspace(bounds[0] + pad, bounds[2] - pad, n_grid)
-    yv = np.linspace(bounds[1] + pad, bounds[3] - pad, n_grid)
+    pad = 0.04 * max(bounds[2] - bounds[0], bounds[3] - bounds[1])
+    xv = np.linspace(bounds[0] - pad, bounds[2] + pad, n_grid)
+    yv = np.linspace(bounds[1] - pad, bounds[3] + pad, n_grid)
     XX, YY = np.meshgrid(xv, yv)
 
-    Psi  = np.full(XX.shape, np.nan)
-    Phi  = np.full(XX.shape, np.nan)
-    Zeta = np.full(XX.shape, np.nan, dtype=complex)
+    bx0, by0, bx1, by1 = bounds
+    margin = 0.3
+    in_box = (
+        (z_flat.real > bx0 - margin) & (z_flat.real < bx1 + margin) &
+        (z_flat.imag > by0 - margin) & (z_flat.imag < by1 + margin)
+    )
+    pts = np.column_stack([z_flat[in_box].real, z_flat[in_box].imag])
+    logger.info("Urban interpolating from %d scattered z-points …", pts.shape[0])
 
-    # Build doubly-connected interior mask: inside outer, outside inner
+    Psi  = griddata(pts, Psi_flat[in_box], (XX, YY), method="linear")
+    Phi  = griddata(pts, Phi_flat[in_box], (XX, YY), method="linear")
+    zr   = griddata(pts, zeta_flat[in_box].real, (XX, YY), method="linear")
+    zi   = griddata(pts, zeta_flat[in_box].imag, (XX, YY), method="linear")
+    Zeta = zr + 1j * zi
+
+    # ── Mask: outside outer OR inside inner polygon ───────────────────────
     logger.info("Building doubly-connected interior mask (%d × %d) …",
                 n_grid, n_grid)
     from shapely.prepared import prep as shapely_prep
     prep_outer = shapely_prep(norm_polygon_outer)
     prep_inner = shapely_prep(norm_polygon_inner)
 
-    mask = np.zeros(XX.shape, dtype=bool)
     for i in range(n_grid):
         for j in range(n_grid):
             pt = Point(XX[i, j], YY[i, j])
-            if prep_outer.contains(pt) and not prep_inner.contains(pt):
-                mask[i, j] = True
-
-    n_inside = mask.sum()
-    logger.info("Doubly-connected interior: %d / %d grid points", n_inside, n_grid * n_grid)
-
-    if n_inside == 0:
-        logger.error("No interior points — check polygon coordinates!")
-        return XX, YY, Psi, Phi, Zeta
-
-    # Invert outer SC map and evaluate potential
-    logger.info("Inverting outer SC map for %d doubly-connected points …", n_inside)
-    zeta_prev = 0.0 + 0.5j
-    interior_indices = np.argwhere(mask)
-
-    for idx in tqdm(interior_indices, desc="Inverse SC (urban)"):
-        i, j = idx
-        z_target = XX[i, j] + 1j * YY[i, j]
-
-        # Skip points very close to the obstacle circle (avoid singularity)
-        zeta = sc_inverse_single(z_target, params, zeta0=zeta_prev, maxfev=800)
-        if zeta is None:
-            continue
-
-        # Skip if the inverse image lands inside the obstacle circle
-        if abs(zeta - obstacle.zeta0) < obstacle.radius * 0.95:
-            continue
-
-        Zeta[i, j] = zeta
-        W = potential_fn(zeta)
-        Psi[i, j] = W.imag
-        Phi[i, j] = W.real
-        zeta_prev = zeta
+            if not prep_outer.contains(pt) or prep_inner.contains(pt):
+                Psi[i, j]  = np.nan
+                Phi[i, j]  = np.nan
+                Zeta[i, j] = np.nan
 
     n_solved = int(np.isfinite(Psi).sum())
-    logger.info("Urban flow grid: %d / %d points solved", n_solved, n_inside)
+    logger.info("Urban flow grid: %d valid interior points", n_solved)
     return XX, YY, Psi, Phi, Zeta

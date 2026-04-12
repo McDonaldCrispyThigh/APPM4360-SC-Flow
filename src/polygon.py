@@ -3,7 +3,7 @@ polygon.py
 ==========
 Load the Boulder city boundary from a TIGER/Line shapefile,
 reproject to UTM Zone 13N (metres), and simplify to a manageable
-number of vertices for the Schwarz–Christoffel solver.
+number of vertices for the Schwarz-Christoffel solver.
 """
 
 from __future__ import annotations
@@ -58,7 +58,7 @@ def simplify_polygon(
     min_vertices: int = 10,
     max_vertices: int = 20,
 ) -> Polygon:
-    """Simplify polygon via Douglas–Peucker with adaptive tolerance."""
+    """Simplify polygon via Douglas-Peucker with adaptive tolerance."""
     lo, hi = 1.0, tolerance * 20.0
     tol = tolerance
     simplified = polygon.simplify(tol, preserve_topology=True)
@@ -115,4 +115,36 @@ def ensure_ccw(z_poly: np.ndarray) -> np.ndarray:
     if signed_area < 0:
         logger.info("Reversing vertex order to CCW")
         z_poly = z_poly[::-1]
+    return z_poly
+
+
+def smooth_extreme_angles(
+    z_poly: np.ndarray,
+    alpha_min: float = 0.35,
+    min_vertices: int = 5,
+) -> np.ndarray:
+    """Remove vertices whose interior angle < alpha_min * pi.
+
+    Near-cusp vertices (very small interior angle) cause the SC crowding
+    problem: pre-vertices cluster within machine epsilon of each other,
+    making all integrals inaccurate.  Dropping such a vertex joins its two
+    adjacent sides into one straight segment, only slightly altering the
+    polygon shape while dramatically improving SC conditioning.
+    """
+    from src.angles import interior_angles_pi
+
+    changed = True
+    while changed:
+        changed = False
+        if len(z_poly) <= min_vertices:
+            break
+        alphas = interior_angles_pi(z_poly)
+        worst = int(np.argmin(alphas))
+        if alphas[worst] < alpha_min:
+            logger.info(
+                "Smoothing vertex %d (alpha=%.3f pi < %.2f pi) - removing near-cusp",
+                worst, alphas[worst], alpha_min,
+            )
+            z_poly = np.delete(z_poly, worst)
+            changed = True
     return z_poly
